@@ -1,0 +1,7 @@
+PyQt6
+cryptography
+Pillow
+numpy
+mutagen
+opencv-python
+matplotlib
