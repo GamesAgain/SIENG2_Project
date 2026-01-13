@@ -113,52 +113,6 @@ QListWidget::item:hover {
 """
 
 # ============================================================================
-# CUSTOM WIDGETS
-# ============================================================================
-
-class DraggablePreviewLabel(QLabel):
-    """QLabel with drag-and-drop support for PNG images"""
-    image_dropped = pyqtSignal(str)  # Emit file path when image dropped
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self._original_style = ""
-    
-    def dragEnterEvent(self, event):
-        """Handle drag enter - check if it's a PNG file"""
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if len(urls) == 1:
-                file_path = urls[0].toLocalFile()
-                if file_path.lower().endswith('.png'):
-                    event.acceptProposedAction()
-                    # Visual feedback: change border color to blue
-                    self._original_style = self.styleSheet()
-                    new_style = self._original_style.replace('border: 2px dashed #555', 'border: 2px dashed #3daee9')
-                    self.setStyleSheet(new_style)
-                    return
-        event.ignore()
-    
-    def dragLeaveEvent(self, event):
-        """Restore original style when drag leaves"""
-        if self._original_style:
-            self.setStyleSheet(self._original_style)
-    
-    def dropEvent(self, event):
-        """Handle file drop"""
-        urls = event.mimeData().urls()
-        if urls:
-            file_path = urls[0].toLocalFile()
-            if file_path.lower().endswith('.png'):
-                self.image_dropped.emit(file_path)
-                event.acceptProposedAction()
-        
-        # Restore original style
-        if self._original_style:
-            self.setStyleSheet(self._original_style)
-
-# ============================================================================
 # MAIN EMBED TAB
 # ============================================================================
 
@@ -680,7 +634,7 @@ class EmbedTab(QWidget):
             self.payload_file_path.setPlaceholderText("Select Text File (.txt)...")
             if hasattr(self, 'attachment_widget'):
                 try:
-                    self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files)")
+                    self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files only: .txt, .md, .csv, ...)")
                 except Exception:
                     pass
 
@@ -732,10 +686,10 @@ class EmbedTab(QWidget):
         group_layout.setContentsMargins(6, 12, 6, 6)
         group_layout.setSpacing(6)
         
-        # Preview Label with drag-and-drop support
-        self.preview_label_std = DraggablePreviewLabel()
+        # Preview Label
+        self.preview_label_std = QLabel()
         self.preview_label_std.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label_std.setText("No Image Selected\n\nSelect cover image from left panel\nor drag & drop PNG file here")
+        self.preview_label_std.setText("No Image Selected\n\nSelect cover image from left panel")
         self.preview_label_std.setStyleSheet("""
             QLabel {
                 border: 2px dashed #555;
@@ -746,10 +700,6 @@ class EmbedTab(QWidget):
         """)
         self.preview_label_std.setMinimumHeight(200)
         self.preview_label_std.setScaledContents(False)
-        
-        # Connect drag-drop signal
-        self.preview_label_std.image_dropped.connect(self._on_preview_image_dropped)
-        
         group_layout.addWidget(self.preview_label_std, 1)
         
         # Info Label (file info)
@@ -886,31 +836,21 @@ class EmbedTab(QWidget):
         except OSError:
             self.preview_info_label_std.hide()
     
-    def _on_preview_image_dropped(self, file_path):
-        """Handle image dropped on preview area"""
-        try:
-            # Validate file exists
-            if not os.path.exists(file_path):
-                QMessageBox.warning(self, "Error", "File not found!")
-                return
-            
-            # Validate PNG file
-            if not file_path.lower().endswith('.png'):
-                QMessageBox.warning(self, "Error", "Only PNG files are supported!")
-                return
-            
-            # Same logic as browse_single_image()
-            self.current_image_path = file_path
-            self.carrier_edit.setText(file_path)
-            self._load_image_preview(file_path)
-            
-            # Update stats if they exist
-            if hasattr(self, 'stat_image_size'):
-                payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-                self._update_stats(file_path, payload_size)
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
+    def _load_image_preview(self, image_path):
+        """Load and display image preview with file info"""
+        pixmap = QPixmap(image_path)
+        
+        if not pixmap.isNull():
+            self.original_preview_pixmaps['std'] = pixmap
+            self._update_preview_scaling()
+            # Update file info label if it exists
+            if hasattr(self, 'preview_info_label_std'):
+                self._update_file_metadata_label(image_path)
+        else:
+            if hasattr(self, 'preview_label_std'):
+                self.preview_label_std.setText("Failed to load image")
+            if hasattr(self, 'preview_info_label_std'):
+                self.preview_info_label_std.hide()
     
     # ========================================================================
     # FILE BROWSING (CONTINUED)
@@ -1217,7 +1157,7 @@ class EmbedTab(QWidget):
             size_bytes = os.path.getsize(file_path)
             size_str = format_file_size(size_bytes)
             filename = os.path.basename(file_path)
-            info_text = filename
+            info_text = f"File: {filename} | Size: {size_str}"
             
             self.preview_info_label_std.setText(info_text)
             self.preview_info_label_std.show()
@@ -1694,8 +1634,6 @@ class EmbedTab(QWidget):
         layout.addLayout(toolbar, 0)
         
         self.payload_text.textChanged.connect(self.update_capacity_indicator)
-        # Also update stats when payload changes
-        self.payload_text.textChanged.connect(self._on_payload_changed)
         
         return tab
 

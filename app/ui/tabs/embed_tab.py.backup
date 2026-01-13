@@ -113,52 +113,6 @@ QListWidget::item:hover {
 """
 
 # ============================================================================
-# CUSTOM WIDGETS
-# ============================================================================
-
-class DraggablePreviewLabel(QLabel):
-    """QLabel with drag-and-drop support for PNG images"""
-    image_dropped = pyqtSignal(str)  # Emit file path when image dropped
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self._original_style = ""
-    
-    def dragEnterEvent(self, event):
-        """Handle drag enter - check if it's a PNG file"""
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if len(urls) == 1:
-                file_path = urls[0].toLocalFile()
-                if file_path.lower().endswith('.png'):
-                    event.acceptProposedAction()
-                    # Visual feedback: change border color to blue
-                    self._original_style = self.styleSheet()
-                    new_style = self._original_style.replace('border: 2px dashed #555', 'border: 2px dashed #3daee9')
-                    self.setStyleSheet(new_style)
-                    return
-        event.ignore()
-    
-    def dragLeaveEvent(self, event):
-        """Restore original style when drag leaves"""
-        if self._original_style:
-            self.setStyleSheet(self._original_style)
-    
-    def dropEvent(self, event):
-        """Handle file drop"""
-        urls = event.mimeData().urls()
-        if urls:
-            file_path = urls[0].toLocalFile()
-            if file_path.lower().endswith('.png'):
-                self.image_dropped.emit(file_path)
-                event.acceptProposedAction()
-        
-        # Restore original style
-        if self._original_style:
-            self.setStyleSheet(self._original_style)
-
-# ============================================================================
 # MAIN EMBED TAB
 # ============================================================================
 
@@ -228,10 +182,6 @@ class EmbedTab(QWidget):
         return stack
 
     def _create_standalone_page(self):
-        """
-        REDESIGNED Standalone Page with Stats Display
-        Layout: Preview (with stats) → Buttons
-        """
         page = QWidget()
         page.setMinimumSize(400, 400)
         
@@ -252,7 +202,7 @@ class EmbedTab(QWidget):
         content_layout.setSpacing(6)
         
         self.standalone_content_stack = QStackedWidget()
-        self.standalone_content_stack.addWidget(self._build_preview_section_with_stats("std"))
+        self.standalone_content_stack.addWidget(self._build_preview_section("std"))
         self.standalone_content_stack.addWidget(self._create_metadata_editor_container("std"))
         
         content_layout.addWidget(self.standalone_content_stack, 1)
@@ -680,7 +630,7 @@ class EmbedTab(QWidget):
             self.payload_file_path.setPlaceholderText("Select Text File (.txt)...")
             if hasattr(self, 'attachment_widget'):
                 try:
-                    self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files)")
+                    self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files only: .txt, .md, .csv, ...)")
                 except Exception:
                     pass
 
@@ -716,205 +666,6 @@ class EmbedTab(QWidget):
             self.current_image_path = file_path
             self.carrier_edit.setText(file_path)
             self._load_image_preview(file_path)
-            # Update stats if they exist
-            if hasattr(self, 'stat_image_size'):
-                payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-                self._update_stats(file_path, payload_size)
-    
-    # ========================================================================
-    # REDESIGNED PREVIEW SECTION WITH STATS
-    # ========================================================================
-    
-    def _build_preview_section_with_stats(self, suffix):
-        """Preview section with stats display (for LSB++ mode)"""
-        group_box = QGroupBox("Preview")
-        group_layout = QVBoxLayout()
-        group_layout.setContentsMargins(6, 12, 6, 6)
-        group_layout.setSpacing(6)
-        
-        # Preview Label with drag-and-drop support
-        self.preview_label_std = DraggablePreviewLabel()
-        self.preview_label_std.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label_std.setText("No Image Selected\n\nSelect cover image from left panel\nor drag & drop PNG file here")
-        self.preview_label_std.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #555;
-                background-color: #222;
-                color: #888;
-                font-size: 10pt;
-            }
-        """)
-        self.preview_label_std.setMinimumHeight(200)
-        self.preview_label_std.setScaledContents(False)
-        
-        # Connect drag-drop signal
-        self.preview_label_std.image_dropped.connect(self._on_preview_image_dropped)
-        
-        group_layout.addWidget(self.preview_label_std, 1)
-        
-        # Info Label (file info)
-        self.preview_info_label_std = QLabel("")
-        self.preview_info_label_std.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_info_label_std.setStyleSheet("color: #e0e0e0; font-size: 9pt;")
-        self.preview_info_label_std.hide()
-        group_layout.addWidget(self.preview_info_label_std, 0)
-        
-        # Stats Row (below preview)
-        stats_container = self._build_stats_row()
-        group_layout.addWidget(stats_container, 0)
-        
-        group_box.setLayout(group_layout)
-        return group_box
-    
-    def _build_stats_row(self):
-        """Build stats display row"""
-        container = QWidget()
-        container.setStyleSheet("""
-            QWidget {
-                background-color: #1e1e1e;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 4px;
-            }
-        """)
-        
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
-        
-        # Image Size Stat
-        self.stat_image_size = self._create_stat_item("Image Size:", "No Image", "#e0e0e0")
-        layout.addWidget(self.stat_image_size)
-        
-        # Max Capacity Stat
-        self.stat_capacity = self._create_stat_item("Max Capacity:", "0 KB", "#e0e0e0")
-        layout.addWidget(self.stat_capacity)
-        
-        # Payload Size Stat
-        self.stat_payload = self._create_stat_item("Payload Size:", "0 KB", "#e0e0e0")
-        layout.addWidget(self.stat_payload)
-        
-        return container
-    
-    def _create_stat_item(self, label_text, value_text, color):
-        """Create a single stat item"""
-        widget = QWidget()
-        widget.setStyleSheet("background: transparent; border: none;")
-        
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        
-        # Label
-        label = QLabel(label_text)
-        label.setStyleSheet("color: #888; font-size: 9pt; background: transparent; border: none;")
-        
-        # Value
-        value = QLabel(value_text)
-        value.setObjectName(f"stat_value_{label_text.replace(':', '').replace(' ', '_').lower()}")
-        value.setStyleSheet(f"color: {color}; font-size: 9pt; background: transparent; border: none;")
-        
-        layout.addWidget(label)
-        layout.addWidget(value)
-        layout.addStretch()
-        
-        # Store reference to value label
-        widget.value_label = value
-        
-        return widget
-    
-    def _update_stats(self, image_path=None, payload_size=0):
-        """Update stats display with current data"""
-        if image_path and os.path.exists(image_path):
-            try:
-                with Image.open(image_path) as img:
-                    width, height = img.size
-                    
-                    # Get file size
-                    file_size = os.path.getsize(image_path)
-                    file_size_str = format_file_size(file_size)
-                    
-                    # Update Image Size (with dimensions and file size)
-                    self.stat_image_size.value_label.setText(f"{width}×{height} ({file_size_str})")
-                    
-                    # Calculate and update Max Capacity
-                    capacity_bytes = (width * height * 3) // 8
-                    capacity_str = format_file_size(capacity_bytes)
-                    self.stat_capacity.value_label.setText(capacity_str)
-                    
-                    # Update Payload Size with color coding
-                    payload_str = format_file_size(payload_size)
-                    self.stat_payload.value_label.setText(payload_str)
-                    
-                    # Color code payload based on capacity
-                    if payload_size > capacity_bytes:
-                        self.stat_payload.value_label.setStyleSheet(
-                            "color: #f44336; font-weight: bold; font-size: 9pt; background: transparent; border: none;"
-                        )
-                    elif payload_size > 0:
-                        self.stat_payload.value_label.setStyleSheet(
-                            "color: #4caf50; font-size: 9pt; background: transparent; border: none;"
-                        )
-                    else:
-                        self.stat_payload.value_label.setStyleSheet(
-                            "color: #e0e0e0; font-size: 9pt; background: transparent; border: none;"
-                        )
-                        
-            except Exception as e:
-                self.stat_image_size.value_label.setText("Error")
-                self.stat_capacity.value_label.setText("N/A")
-        else:
-            self.stat_image_size.value_label.setText("No Image")
-            self.stat_capacity.value_label.setText("0 KB")
-            self.stat_payload.value_label.setText(format_file_size(payload_size))
-    
-    def _on_payload_changed(self):
-        """Update stats when payload changes"""
-        if hasattr(self, 'stat_image_size') and self.current_image_path:
-            payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-            self._update_stats(self.current_image_path, payload_size)
-    
-    def _update_file_metadata_label(self, file_path):
-        """Update file info label with filename only"""
-        try:
-            filename = os.path.basename(file_path)
-            # Show only filename (size is now in stats)
-            info_text = filename
-            
-            self.preview_info_label_std.setText(info_text)
-            self.preview_info_label_std.show()
-        except OSError:
-            self.preview_info_label_std.hide()
-    
-    def _on_preview_image_dropped(self, file_path):
-        """Handle image dropped on preview area"""
-        try:
-            # Validate file exists
-            if not os.path.exists(file_path):
-                QMessageBox.warning(self, "Error", "File not found!")
-                return
-            
-            # Validate PNG file
-            if not file_path.lower().endswith('.png'):
-                QMessageBox.warning(self, "Error", "Only PNG files are supported!")
-                return
-            
-            # Same logic as browse_single_image()
-            self.current_image_path = file_path
-            self.carrier_edit.setText(file_path)
-            self._load_image_preview(file_path)
-            
-            # Update stats if they exist
-            if hasattr(self, 'stat_image_size'):
-                payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-                self._update_stats(file_path, payload_size)
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
-    
-    # ========================================================================
-    # FILE BROWSING (CONTINUED)
-    # ========================================================================
 
     def browse_metadata_carrier(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1217,7 +968,7 @@ class EmbedTab(QWidget):
             size_bytes = os.path.getsize(file_path)
             size_str = format_file_size(size_bytes)
             filename = os.path.basename(file_path)
-            info_text = filename
+            info_text = f"File: {filename} | Size: {size_str}"
             
             self.preview_info_label_std.setText(info_text)
             self.preview_info_label_std.show()
@@ -1694,8 +1445,6 @@ class EmbedTab(QWidget):
         layout.addLayout(toolbar, 0)
         
         self.payload_text.textChanged.connect(self.update_capacity_indicator)
-        # Also update stats when payload changes
-        self.payload_text.textChanged.connect(self._on_payload_changed)
         
         return tab
 
