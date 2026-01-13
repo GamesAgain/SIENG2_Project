@@ -1,15 +1,9 @@
 import os
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QTabWidget, QLabel, QComboBox, QLineEdit, QPushButton, QTextEdit,
-    QProgressBar, QGroupBox, QFileDialog, QListWidget, QGridLayout, 
-    QStyle, QStackedWidget, QListWidgetItem, QDialog,
-    QScrollArea, QFormLayout, QSplitter, QSizePolicy
-)
-from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
-from PyQt6.QtGui import QPixmap, QFont, QDragEnterEvent, QDropEvent, QResizeEvent
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QPixmap, QCursor
 
-from app.utils.file_io import  (truncate_filename, format_file_size)
+from app.utils.file_io import (truncate_filename, format_file_size)
 
 # ============================================================================
 # STYLE
@@ -20,9 +14,11 @@ TILE_CONTAINER_STYLE = """
     border-radius: 6px;
 """
 
-
 class LocoFileTile(QWidget):
     """Display thumbnail, filename, and file size for Locomotive mode."""
+    
+    # Signal ส่ง path ของไฟล์ที่ต้องการลบกลับไปให้หน้าจอหลัก
+    deleteRequested = pyqtSignal(str)
     
     def __init__(self, file_path):
         super().__init__()
@@ -33,13 +29,52 @@ class LocoFileTile(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
         
+        # --- ส่วนหัว: ปุ่มลบ (X) ---
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.addStretch() # ดันปุ่มไปขวาสุด
+        
+        self.btn_close = QPushButton("×")
+        self.btn_close.setFixedSize(20, 20)
+        self.btn_close.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_close.setToolTip("Remove this file")
+        self.btn_close.setObjectName("btnCloseTile")
+        
+        self.btn_close.setStyleSheet("""
+            #btnCloseTile {
+                background-color: transparent;
+                color: #888888;
+                border: none;
+                font-weight: bold;
+                font-size: 16px;
+                padding-bottom: 2px;
+            }
+            #btnCloseTile:hover {
+                color: #ff5555;
+                background-color: #333333;
+                border-radius: 10px;
+            }
+        """)
+
+        self.btn_close.clicked.connect(self._on_close_clicked)
+        top_row.addWidget(self.btn_close)
+        
+        layout.addLayout(top_row)
+        
+        # --- ส่วนแสดงผลรูปภาพ ---
         self.thumbnail_container = self._create_thumbnail()
         layout.addWidget(self.thumbnail_container, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        # --- ส่วนแสดงผลชื่อและขนาด ---
         layout.addWidget(self._create_filename_label(), 0, Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._create_filesize_label(), 0, Qt.AlignmentFlag.AlignCenter)
+
+    def _on_close_clicked(self):
+        """เมื่อกดปุ่ม X ให้ส่งสัญญาณบอก EmbedTab"""
+        self.deleteRequested.emit(self.file_path)
 
     def _load_pixmap(self):
         """Load and store the original pixmap for scaling."""
@@ -48,6 +83,12 @@ class LocoFileTile(QWidget):
             self.original_pixmap = pixmap
         else:
             self.original_pixmap = None
+            # ถ้าโหลดรูปไม่ได้ ให้แสดงใน container
+            self.thumbnail_container.setText("📄")
+            self.thumbnail_container.setStyleSheet(TILE_CONTAINER_STYLE + "font-size: 32pt; color: #666;")
+
+        # Update thumbnail size immediately after loading
+        self._update_thumbnail_size(self.thumbnail_container)
 
     def _create_thumbnail(self):
         container = QLabel()
@@ -55,13 +96,6 @@ class LocoFileTile(QWidget):
         container.setAlignment(Qt.AlignmentFlag.AlignCenter)
         container.setStyleSheet(TILE_CONTAINER_STYLE)
         container.setScaledContents(False)
-        
-        if self.original_pixmap is None:
-            container.setText("🖼️")
-            container.setStyleSheet(TILE_CONTAINER_STYLE + "font-size: 32pt; color: #666;")
-        else:
-            self._update_thumbnail_size(container)
-        
         return container
     
     def _update_thumbnail_size(self, container):
@@ -70,12 +104,13 @@ class LocoFileTile(QWidget):
             return
         
         container_size = container.size()
+        # Default size if not yet shown
         if container_size.width() <= 0 or container_size.height() <= 0:
-            container_size = QSize(82, 82)
+            container_size = QSize(60, 60)
         
-        max_size = min(container_size.width(), container_size.height()) - 8
-        if max_size < 40:
-            max_size = 40
+        max_size = min(container_size.width(), container_size.height()) - 4
+        if max_size < 30:
+            max_size = 30
         
         scaled_pixmap = self.original_pixmap.scaled(
             max_size, max_size,
@@ -92,13 +127,13 @@ class LocoFileTile(QWidget):
 
     def _create_filename_label(self):
         filename = os.path.basename(self.file_path)
-        label = QLabel(truncate_filename(filename))
+        # ใช้ truncate_filename ช่วยตัดคำ
+        label = QLabel(truncate_filename(filename, 15))
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet(
             "font-size: 9pt; color: #bbb; background-color: transparent; "
             "border: none; padding: 2px;"
         )
-        label.setWordWrap(True)
         label.setToolTip(filename)
         return label
 

@@ -8,19 +8,18 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 
 # --- PyQt6 Widgets ---
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QStackedWidget, 
-    QPushButton, QFileDialog, QStyle
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, 
+    QPushButton, QFileDialog, QStyle, QFrame
 )
 
-# --- Local Utils (ฟังก์ชันตัดคำและแปลงหน่วยขนาดไฟล์) ---
+# --- Local Utils ---
 from app.utils.file_io import truncate_filename, format_file_size
+
 class AttachmentDropWidget(QWidget):
     """Modern drag & drop widget for file attachment with visual preview."""
     
     fileSelected = pyqtSignal(str)
     fileCleared = pyqtSignal()
-    # Signal requested when the internal Browse button is pressed and
-    # the parent wants to handle the actual file selection dialog.
     requestBrowse = pyqtSignal()
     
     def __init__(self, parent=None):
@@ -34,7 +33,7 @@ class AttachmentDropWidget(QWidget):
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         
         self.stack = QStackedWidget()
@@ -45,72 +44,99 @@ class AttachmentDropWidget(QWidget):
         
         self.browse_btn = QPushButton("Browse Files")
         self.browse_btn.setMinimumHeight(32)
-        # Emit a request signal so the parent (`EmbedTab`) can open
-        # its own file dialog (and apply technique-specific filters).
-        # Parent should connect `requestBrowse` to `browse_payload_file`.
         self.browse_btn.clicked.connect(self.requestBrowse.emit)
         layout.addWidget(self.browse_btn, 0)
     
     def _create_empty_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(6, 6, 6, 6)
         
         self.empty_label = QLabel("Drag & Drop\n(DOCX, ZIP, TXT, ...)")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setStyleSheet(
             "border: 2px dashed #555; background-color: #222; "
-            "color: #888; font-size: 14px;"
+            "color: #888; font-size: 14px; border-radius: 6px;"
         )
         
         layout.addWidget(self.empty_label)
         return widget
     
     def _create_loaded_widget(self):
+        # --- ใช้ Widget เปล่าเป็น Container ---
         widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
         
+        # --- เปลี่ยนเป็น QHBoxLayout (แนวนอน) ---
+        main_layout = QHBoxLayout(widget)
+        main_layout.setContentsMargins(10, 8, 10, 8) 
+        main_layout.setSpacing(15) # ระยะห่างระหว่างรูปกับข้อความ
+        
+        # --- ส่วนที่ 1: รูปภาพ/ไอคอน (ซ้าย) ---
         self.icon_container = QLabel()
-        self.icon_container.setMinimumSize(60, 60)
+        self.icon_container.setFixedSize(54, 54) # กำหนดขนาดกรอบให้ตายตัว (จะได้สวยเป๊ะ)
         self.icon_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.icon_container.setScaledContents(False)
+        # ใส่กรอบ (Border) รอบรูปตรงนี้
+        self.icon_container.setStyleSheet("""
+            QLabel {
+                background-color: #2b2b2b;
+                border: 1px solid #555;  /* เส้นขอบสีเทา */
+                border-radius: 6px;      /* มุมโค้งมน */
+                padding: 2px;
+            }
+        """)
+        
+        # --- ส่วนที่ 2: ข้อความรายละเอียด (ขวา) ---
+        text_container = QWidget()
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2) 
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter) # จัดให้อยู่กึ่งกลางแนวตั้ง
         
         self.filename_label = QLabel()
-        self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # จัดชิดซ้าย
+        self.filename_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.filename_label.setStyleSheet("""
+            font-size: 10pt;
+            font-weight: bold;
+            color: #e0e0e0;
+            border: none;
+        """)
         
         self.filesize_label = QLabel()
-        self.filesize_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # จัดชิดซ้าย
+        self.filesize_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.filesize_label.setStyleSheet("""
+            font-size: 9pt;
+            color: #888;
+            border: none;
+        """)
         
-        layout.addWidget(self.icon_container, 1, Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.filename_label, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.filesize_label, 0, Qt.AlignmentFlag.AlignCenter)
+        text_layout.addWidget(self.filename_label)
+        text_layout.addWidget(self.filesize_label)
+        
+        # เพิ่มเข้า Layout หลัก
+        main_layout.addWidget(self.icon_container)
+        main_layout.addWidget(text_container, 1) # ใส่เลข 1 เพื่อให้ส่วนข้อความยืดเต็มพื้นที่ที่เหลือ
         
         return widget
     
     def _update_icon_size(self):
-        """Update icon size based on container dimensions."""
+        """Update icon size to fit fixed container."""
         if self.original_pixmap is None:
             return
         
-        container_size = self.icon_container.size()
-        if container_size.width() <= 0 or container_size.height() <= 0:
-            container_size = QSize(72, 72)
-        
-        max_size = min(container_size.width(), container_size.height()) - 8
-        if max_size < 40:
-            max_size = 40
+        # ปรับรูปให้เล็กกว่ากรอบนิดหน่อย (48px ในกรอบ 54px)
+        target_size = 46 
         
         scaled_pixmap = self.original_pixmap.scaled(
-            max_size, max_size,
+            target_size, target_size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
         self.icon_container.setPixmap(scaled_pixmap)
     
     def resizeEvent(self, a0):
-        """Handle resize events to update icon scaling."""
         super().resizeEvent(a0)
         if self.original_pixmap is not None and self.file_path:
             self._update_icon_size()
@@ -127,20 +153,14 @@ class AttachmentDropWidget(QWidget):
     
     def _set_loaded_state(self):
         self.stack.setCurrentIndex(1)
+        # เปลี่ยนเป็นกรอบทึบสีน้ำเงินเมื่อมีไฟล์
         self.setStyleSheet("""
             AttachmentDropWidget {
-                border: 2px solid #3daee9;
+                border: 1px solid #3daee9;
                 border-radius: 8px;
                 background-color: #1e2a36;
             }
         """)
-    
-    def _browse_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select File", "", "All Files (*)"
-        )
-        if file_path:
-            self.set_file(file_path)
     
     def set_file(self, file_path):
         if not file_path or not os.path.isfile(file_path):
@@ -160,31 +180,20 @@ class AttachmentDropWidget(QWidget):
         pixmap = QPixmap(file_path)
         if not pixmap.isNull():
             self.original_pixmap = pixmap
-            self._update_icon_size()
         else:
             self.original_pixmap = None
             file_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-            icon_pixmap = file_icon.pixmap(72, 72)
+            icon_pixmap = file_icon.pixmap(48, 48)
             self.icon_container.setPixmap(icon_pixmap)
         
-        self.icon_container.setStyleSheet("""
-            background-color: #2b2b2b;
-            border: 1px solid #444;
-            border-radius: 6px;
-        """)
+        # เรียก update size ทันที
+        self._update_icon_size()
         
         filename = os.path.basename(file_path)
-        truncated = truncate_filename(filename, 20)
+        truncated = truncate_filename(filename, 30) # เพิ่มความยาวตัดคำเพราะแนวนอนมีที่เยอะขึ้น
+        
         self.filename_label.setText(truncated)
         self.filename_label.setToolTip(filename)
-        self.filename_label.setStyleSheet("""
-            font-size: 10pt;
-            color: #e0e0e0;
-            font-weight: bold;
-            background-color: transparent;
-            border: none;
-            padding: 2px;
-        """)
         
         try:
             size_bytes = os.path.getsize(file_path)
@@ -193,12 +202,6 @@ class AttachmentDropWidget(QWidget):
             size_text = "Unknown size"
         
         self.filesize_label.setText(size_text)
-        self.filesize_label.setStyleSheet("""
-            font-size: 8pt;
-            color: #777;
-            background-color: transparent;
-            border: none;
-        """)
     
     def clear_file(self):
         self.file_path = None
@@ -213,7 +216,7 @@ class AttachmentDropWidget(QWidget):
                 AttachmentDropWidget {
                     border: 2px dashed #3daee9;
                     border-radius: 8px;
-                    background-color: #1a1a1a;
+                    background-color: #222;
                 }
             """)
     
@@ -235,7 +238,7 @@ class AttachmentDropWidget(QWidget):
             self._set_loaded_state()
         else:
             self._set_empty_state()
-    
+            
     def get_file_path(self):
         return self.file_path
     

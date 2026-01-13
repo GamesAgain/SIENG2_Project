@@ -1,5 +1,17 @@
+from __future__ import annotations
+
 import os
 import math
+from typing import Tuple, Union, List
+
+import numpy as np
+from PIL import Image
+
+# ตรวจสอบว่ามีไฟล์ exceptions.py หรือไม่ ถ้าไม่มีให้สร้างคลาสนี้ไว้ในไฟล์เดียวกันหรือไฟล์แยก
+# ถ้ามีไฟล์ exceptions.py ให้ใช้: from app.utils.exceptions import StegoEngineError
+class StegoEngineError(Exception):
+    """Custom exception for Steganography Engine errors."""
+    pass
 
 # ============================================================================
 # CONSTANTS (ค่าคงที่สำหรับตรวจสอบโครงสร้างไฟล์)
@@ -35,7 +47,7 @@ def truncate_filename(filename: str, max_length: int = 20) -> str:
         return f"{name[:trim_len]}..{ext}"
     return filename
 
-def get_file_info(file_path: str) -> dict:
+def get_file_info(file_path: str) -> Union[dict, None]:
     """
     ดึงข้อมูลพื้นฐานของไฟล์เพื่อแสดงผลใน GUI หรือ Report
     """
@@ -76,6 +88,57 @@ def save_file_binary(file_path: str, data: bytes) -> bool:
     except Exception as e:
         print(f"Error saving file {file_path}: {e}")
         return False
+
+# ============================================================================
+# IMAGE I/O (การจัดการไฟล์รูปภาพ PNG)
+# ============================================================================
+
+def _validate_png_image(img: Image.Image, path: str) -> None:
+    """Internal helper to validate PNG format and mode."""
+    if img.format != "PNG":
+        raise StegoEngineError(f"File is not PNG: {path}")
+    # อนุญาต RGB และ RGBA (แต่จะแปลงเป็น RGB ทีหลัง)
+    if img.mode not in ("RGB", "RGBA"):
+        raise StegoEngineError(f"Invalid PNG mode (expected RGB/RGBA): {img.mode}")
+
+def load_png(path: str) -> np.ndarray:
+    """
+    Load PNG (24-bit) and return as HxWx3 uint8 array (NumPy).
+    Reject non-PNG formats.
+    """
+    if not os.path.isfile(path):
+        raise StegoEngineError(f"File not found: {path}")
+    try:
+        img = Image.open(path)
+    except Exception as exc:
+        raise StegoEngineError(f"Failed to open image: {exc}") from exc
+
+    _validate_png_image(img, path)
+
+    # Convert to RGB (Drop Alpha Channel if exists)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    arr = np.asarray(img, dtype=np.uint8)
+    
+    # Validate dimensions (Height, Width, 3 Channels)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise StegoEngineError("Expected 24-bit RGB PNG.")
+        
+    return arr
+
+def save_png_array(arr: np.ndarray, path: str) -> None:
+    """
+    Save RGB array (NumPy) as PNG file.
+    """
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise StegoEngineError("save_png_array expects HxWx3 array.")
+
+    try:
+        img = Image.fromarray(arr.astype(np.uint8), mode="RGB")
+        img.save(path, format="PNG")
+    except Exception as exc:
+        raise StegoEngineError(f"Failed to save PNG: {exc}") from exc
 
 # ============================================================================
 # LOCOMOTIVE TECHNIQUE SUPPORT (การต่อท้ายไฟล์และการแบ่งส่วน)
@@ -139,7 +202,7 @@ def extract_tail_data(stego_path: str) -> bytes:
 # FRAGMENTATION (การแบ่งไฟล์สำหรับ Configurable Models) 
 # ============================================================================
 
-def split_data(data: bytes, num_chunks: int) -> list[bytes]:
+def split_data(data: bytes, num_chunks: int) -> List[bytes]:
     """
     แบ่งข้อมูล Binary ออกเป็นส่วนๆ (Fragmentation) เพื่อกระจายฝังในหลายไฟล์
     ใช้สำหรับเทคนิค Locomotive แบบกระจาย หรือ Configurable Models
@@ -150,7 +213,7 @@ def split_data(data: bytes, num_chunks: int) -> list[bytes]:
     chunk_size = math.ceil(len(data) / num_chunks)
     return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
 
-def merge_data(chunks: list[bytes]) -> bytes:
+def merge_data(chunks: List[bytes]) -> bytes:
     """
     รวมข้อมูลที่ถูกแบ่งส่วนกลับเป็นก้อนเดียว
     """

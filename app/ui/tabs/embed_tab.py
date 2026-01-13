@@ -4,7 +4,10 @@
 import sys
 import os
 from datetime import datetime
+from typing import Optional
 
+from app.core.stego.lsb_plus_engine.lsb_plus import LSB_Plus
+from app.utils.exceptions import StegoEngineError
 from app.utils.file_io import format_file_size
 
 # ============================================================================
@@ -60,7 +63,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLineEdit, QTextEdit, QComboBox,
     
     # Display Widgets
-    QLabel, QProgressBar, QListWidget, QListWidgetItem,
+    QLabel, QProgressBar, QListWidget, QListWidgetItem, QMessageBox,
     
     # Utilities
     QFileDialog, QStyle
@@ -79,6 +82,7 @@ from app.ui.dialogs.text_editor_dialog import TextEditorDialog
 from app.ui.components.loco_file import LocoFileTile
 
 from app.ui.components.attachment_drop_widget import AttachmentDropWidget
+
 
 # ============================================================================
 # CONSTANTS & STYLES
@@ -205,7 +209,7 @@ class EmbedTab(QWidget):
         scroll_area.setWidget(content_widget)
         
         layout.addWidget(scroll_area, 1)
-        layout.addWidget(self._build_execution_group("Execute Embedding"), 0)
+        layout.addWidget(self._build_execution_group("Embed Data"), 0)
         return page
 
     def _create_locomotive_page(self):
@@ -784,6 +788,14 @@ class EmbedTab(QWidget):
         self.loco_list_widget_cfg.clear()
         self._update_locomotive_ui_state()
 
+    def remove_specific_file(self, file_path):
+        """Remove a specific file from the locomotive list (called by Tile X button)."""
+        if file_path in self.locomotive_files:
+            self.locomotive_files.remove(file_path)
+            # Refresh list to remove the item visually
+            self._update_locomotive_list()
+            self._update_locomotive_ui_state()
+
     def _update_locomotive_list(self):
         self.loco_list_widget_std.clear()
         self.loco_list_widget_cfg.clear()
@@ -792,15 +804,23 @@ class EmbedTab(QWidget):
             self._add_locomotive_file(file_path)
 
     def _add_locomotive_file(self, file_path):
+        # Create Tiles
+        tile_std = LocoFileTile(file_path)
+        tile_cfg = LocoFileTile(file_path)
+        
+        # Connect delete signals
+        tile_std.deleteRequested.connect(self.remove_specific_file)
+        tile_cfg.deleteRequested.connect(self.remove_specific_file)
+
+        # Add to Standalone List
         item_std = QListWidgetItem(self.loco_list_widget_std)
         item_std.setSizeHint(QSize(120, 150))
-        tile_std = LocoFileTile(file_path)
         self.loco_list_widget_std.addItem(item_std)
         self.loco_list_widget_std.setItemWidget(item_std, tile_std)
         
+        # Add to Configurable List
         item_cfg = QListWidgetItem(self.loco_list_widget_cfg)
         item_cfg.setSizeHint(QSize(120, 150))
-        tile_cfg = LocoFileTile(file_path)
         self.loco_list_widget_cfg.addItem(item_cfg)
         self.loco_list_widget_cfg.setItemWidget(item_cfg, tile_cfg)
 
@@ -1185,59 +1205,70 @@ class EmbedTab(QWidget):
         container.setMinimumHeight(100)
         container.setMaximumHeight(130)
         
+        # 1. Main Layout เป็นแนวตั้ง (Vertical)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        btn_exec = QPushButton(button_text)
-        btn_exec.setMinimumHeight(45)
-        btn_exec.setStyleSheet(
+        # สร้างปุ่ม 1
+        self.btn_exec = QPushButton(button_text)
+        self.btn_exec.setMinimumHeight(45)
+        self.btn_exec.setStyleSheet(
             "font-weight: bold; font-size: 11pt; "
-            "background-color: #2d5a75; border-radius: 4px;"
+            "background-color: #2d5a75; border-radius: 4px; color: white;"
         )
         
-        progress_bar = QProgressBar()
-        progress_bar.setValue(0)
-        progress_bar.setTextVisible(False)
-        
-        status_label = QLabel("Ready.")
-        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_label.setStyleSheet("color: #888; font-size: 9pt;")
-
-        btn_exec.clicked.connect(
-            lambda: self._start_execution_animation(btn_exec, progress_bar, status_label)
+        # สร้างปุ่ม 2
+        self.btn_save_stego = QPushButton('Save Stego')
+        self.btn_save_stego.setMinimumHeight(45)
+        self.btn_save_stego.setStyleSheet(
+            "font-weight: bold; font-size: 11pt; "
+            "background-color: #888; border-radius: 4px; color: white;"
         )
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        
+        self.status_label = QLabel("Ready.")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setStyleSheet("color: #888; font-size: 9pt;")
 
-        layout.addWidget(btn_exec)
-        layout.addWidget(progress_bar)
-        layout.addWidget(status_label)
+        self.btn_exec.clicked.connect(
+            lambda: self._on_run_embed()
+        )
+        
+        # 2. สร้าง Layout แนวนอนสำหรับปุ่ม
+        hlayout = QHBoxLayout() 
+        hlayout.setSpacing(10)
+        hlayout.addWidget(self.btn_exec)
+        hlayout.addWidget(self.btn_save_stego)
+
+        # 3. ยัด Layout ปุ่ม ลงใน Layout หลัก
+        layout.addLayout(hlayout)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.status_label)
+        
         return container
-
+    
+    def _update_progress_bar(self, button, progress_bar, status_label, step):
+        self.step = step
+        if self.step == 20:
+            self.status_label.setText("Encrypting payload...")
+        elif self.step == 50:
+            self.status_label.setText("Processing carrier(s)...")
+        elif self.step == 80:
+            self.status_label.setText("Embedding data...")
+        elif self.step >= 100:
+            self.status_label.setText("Completed Successfully!")
+            button.setEnabled(True)
+        
     def _start_execution_animation(self, button, progress_bar, status_label):
         button.setEnabled(False)
         progress_bar.setValue(0)
-        status_label.setText("Initializing...")
-        
-        self.timer = QTimer()
+        status_label.setText("Initializing...") 
         self.step = 0
-        
-        def update_progress():
-            self.step += 5
-            progress_bar.setValue(self.step)
-            
-            if self.step == 20:
-                status_label.setText("Encrypting payload...")
-            elif self.step == 50:
-                status_label.setText("Processing carrier(s)...")
-            elif self.step == 80:
-                status_label.setText("Embedding data...")
-            elif self.step >= 100:
-                self.timer.stop()
-                status_label.setText("Completed Successfully!")
-                button.setEnabled(True)
-        
-        self.timer.timeout.connect(update_progress)
-        self.timer.start(50)
+
 
     def _build_mode_section(self):
         return self._create_combo_group("Mode Selection", [
@@ -1266,6 +1297,7 @@ class EmbedTab(QWidget):
             "Hides messages within PNG text chunks or MP3 tags"
             )
         ], "tech_combo")
+    
     def _create_combo_group(self, title, items, attribute_name):
         box = QGroupBox(title)
         box.setMinimumHeight(70)
@@ -1459,7 +1491,8 @@ class EmbedTab(QWidget):
         type_row = QHBoxLayout()
         self.lbl_key = QLabel("Key Type:")
         self.enc_combo = QComboBox()
-        self.enc_combo.addItems(["Password (AES-256)", "Public Key (RSA-3072)"])
+        self.enc_combo.addItem("Password (AES-256)", "password")
+        self.enc_combo.addItem("Public Key (RSA-3072)", "public")
         self.enc_combo.setItemData(0, "Use a passphrase to encrypt the payload", tt)
         self.enc_combo.setItemData(1, "Use RSA public key to encrypt the payload", tt)
         
@@ -1506,17 +1539,23 @@ class EmbedTab(QWidget):
 
     def _create_public_key_page(self):
         page = QWidget()
-        layout = QHBoxLayout(page)
+        layout = QVBoxLayout(page)  # เปลี่ยนเป็น QVBoxLayout เพื่อจัดวางง่ายขึ้น
         layout.setContentsMargins(0, 0, 0, 0)
+
+        self.public_key_edit = QLineEdit()
+        self.public_key_edit.setPlaceholderText("Path to public key...")
+        self.public_key_edit.hide()
+        layout.addWidget(self.public_key_edit) 
 
         # Attachment widget for public key (accept .pem by default)
         self.pubkey_attachment = AttachmentDropWidget()
-        # Hint that only PEM files are expected
+        
         try:
             self.pubkey_attachment.empty_label.setText("Import Public Key\n(.pem files)")
         except Exception:
             pass
 
+        # เชื่อม Signal
         self.pubkey_attachment.requestBrowse.connect(self.browse_public_key)
         self.pubkey_attachment.fileSelected.connect(self._on_public_key_selected)
 
@@ -1659,3 +1698,113 @@ class EmbedTab(QWidget):
         btn_row.addWidget(btn_clear)
         btn_row.addStretch()
         return btn_row
+    
+    
+    # ============================================================================
+    # Process method
+    # ============================================================================
+    
+    def _on_browse_public_key(self) -> None:
+        """
+        เลือกไฟล์ public key (.pem) – ตอนนี้ยังไม่ใช้ embed จริง
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Public Key PEM",
+            "",
+            "PEM Files (*.pem);;All Files (*)",
+        )
+        if not path:
+            return
+    
+    def _on_run_embed(self) -> None:
+        if not self.current_image_path:
+            QMessageBox.warning(self, "Missing cover", "Please select a cover PNG.")
+            return
+
+        text = self.payload_text.toPlainText()
+        if not text:
+            QMessageBox.warning(self, "Empty payload", "Please enter some text.")
+            return
+
+        
+
+        password: Optional[str] = None
+        public_key_path: Optional[str] = None
+        
+        mode = self.enc_combo.currentData()  # "password" หรือ "public"
+        if mode == "password":
+            password = self.passphrase.text()
+            confirm_password = self.confirmpassphrase.text()
+            
+            # เช็คว่าได้กรอกรหัสหรือไม่
+            if not password:
+                QMessageBox.warning(
+                    self,
+                    "Missing password",
+                    "Please enter a password.",
+                )
+                return
+            
+            # เช็คว่ารหัสผ่านตรงกันหรือไม่
+            if password != confirm_password:
+                QMessageBox.warning(
+                    self,
+                    'Password Mismatch',
+                    'Passwords do not match. Please try again.'
+                )
+                # ล้างช่อง Confirm ให้กรอกใหม่เพื่อความสะดวก
+                self.confirmpassphrase.clear()
+                self.confirmpassphrase.setFocus()
+                return
+            
+        elif mode == "public":
+            public_key_path = self.public_key_edit.text().strip()
+            if not public_key_path:
+                QMessageBox.warning(
+                    self,
+                    "Missing public key",
+                    "Please select a public key PEM.",
+                )
+                return
+        else:
+            QMessageBox.critical(
+                self,
+                "Mode error",
+                f"Unknown encryption mode: {mode}",
+            )
+            return
+
+        self._update_progress_bar(self.btn_exec, self.progress_bar, "Embedding...", 0)
+        QApplication.processEvents()
+        
+        try:
+            lsb_engine = LSB_Plus()
+            
+            # Extract text from QTextEdit and convert to bytes
+            payload_text = self.payload_text.toPlainText()
+            
+            stego_arr, metrics = lsb_engine.embed(
+                cover_path=self.current_image_path,
+                payload_text=payload_text,
+                mode=mode,                    # "password" หรือ "public"
+                password=password,            # ส่ง None ถ้าเป็นโหมด public
+                public_key_path=public_key_path, # ส่ง None ถ้าเป็นโหมด password
+                show_progress=False,
+            )
+        except StegoEngineError as exc:
+            QMessageBox.critical(self, "Embed Error", str(exc))
+            self.status_label.setText("Error: embed failed.")
+            return
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Unexpected Error",
+                f"Unexpected error during embedding:\n\n{exc}",
+            )
+            self.status_label.setText("Error: unexpected exception.")
+            return
+        
+        self._update_progress_bar(self.btn_exec, self.progress_bar, "Embedding completed.", 100)
+        
+        QMessageBox.information(self, "Success", "Embedding process simulation completed.")
