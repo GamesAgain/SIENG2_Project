@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 from app.utils.file_io import truncate_filename, format_file_size
 
 class AttachmentDropWidget(QWidget):
-    """drag & drop widget for file attachment with visual preview."""
+    """Modern drag & drop widget for file attachment with visual preview."""
     
     fileSelected = pyqtSignal(str)
     fileCleared = pyqtSignal()
@@ -31,7 +31,7 @@ class AttachmentDropWidget(QWidget):
         self._init_ui()
         self._set_empty_state()
         
-        
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAcceptDrops(True)
     
     def set_allowed_extensions(self, extensions):
@@ -41,24 +41,13 @@ class AttachmentDropWidget(QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
-        
-        # Create a specific frame for the drop zone
-        self.drop_frame = QFrame()
-        self.drop_frame.setObjectName("drop_frame")
-        self.drop_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        
-        drop_layout = QVBoxLayout(self.drop_frame)
-        drop_layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         
         self.stack = QStackedWidget()
         self.stack.addWidget(self._create_empty_widget())
         self.stack.addWidget(self._create_loaded_widget())
         
-        drop_layout.addWidget(self.stack)
-        
-        # Add drop frame to main layout
-        layout.addWidget(self.drop_frame, 1)
+        layout.addWidget(self.stack, 1)
         
         self.browse_btn = QPushButton("Browse Files")
         self.browse_btn.setMinimumHeight(32)
@@ -68,10 +57,11 @@ class AttachmentDropWidget(QWidget):
     def _create_empty_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(5, 5, 5, 5) # Reduced from 6 to 2
+        layout.setContentsMargins(6, 6, 6, 6)
         
         self.empty_label = QLabel("Drag & Drop\n(DOCX, ZIP, TXT, ...)")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Fix: Remove border/background from label so parent style shows through
         self.empty_label.setStyleSheet(
             "border: none; background-color: transparent; "
             "color: #888; font-size: 14px;"
@@ -81,22 +71,25 @@ class AttachmentDropWidget(QWidget):
         return widget
     
     def _create_loaded_widget(self):
+        # --- ใช้ Widget เปล่าเป็น Container ---
         widget = QWidget()
         
+        # --- เปลี่ยนเป็น QHBoxLayout (แนวนอน) ---
         main_layout = QHBoxLayout(widget)
         main_layout.setContentsMargins(10, 8, 10, 8) 
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(10) # Reduced from 15 to 10 for compact look
         
         # --- ส่วนที่ 1: รูปภาพ/ไอคอน (ซ้าย) ---
         self.icon_container = QLabel()
-        self.icon_container.setFixedSize(54, 54)
+        self.icon_container.setFixedSize(54, 54) # กำหนดขนาดกรอบให้ตายตัว (จะได้สวยเป๊ะ)
         self.icon_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.icon_container.setScaledContents(False)
+        # ใส่กรอบ (Border) รอบรูปตรงนี้
         self.icon_container.setStyleSheet("""
             QLabel {
                 background-color: #2b2b2b;
-                border: 1px solid #555;
-                border-radius: 6px;
+                border: 1px solid #555;  /* เส้นขอบสีเทา */
+                border-radius: 6px;      /* มุมโค้งมน */
                 padding: 2px;
             }
         """)
@@ -106,9 +99,10 @@ class AttachmentDropWidget(QWidget):
         text_layout = QVBoxLayout(text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2) 
-        text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter) # จัดให้อยู่กึ่งกลางแนวตั้ง
         
         self.filename_label = QLabel()
+        # จัดชิดซ้าย
         self.filename_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.filename_label.setStyleSheet("""
             font-size: 10pt;
@@ -118,6 +112,7 @@ class AttachmentDropWidget(QWidget):
         """)
         
         self.filesize_label = QLabel()
+        # จัดชิดซ้าย
         self.filesize_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.filesize_label.setStyleSheet("""
             font-size: 9pt;
@@ -128,8 +123,9 @@ class AttachmentDropWidget(QWidget):
         text_layout.addWidget(self.filename_label)
         text_layout.addWidget(self.filesize_label)
         
+        # เพิ่มเข้า Layout หลัก
         main_layout.addWidget(self.icon_container)
-        main_layout.addWidget(text_container, 1)
+        main_layout.addWidget(text_container, 1) # ใส่เลข 1 เพื่อให้ส่วนข้อความยืดเต็มพื้นที่ที่เหลือ
         
         return widget
     
@@ -138,6 +134,7 @@ class AttachmentDropWidget(QWidget):
         if self.original_pixmap is None:
             return
         
+        # ปรับรูปให้เล็กกว่ากรอบนิดหน่อย (48px ในกรอบ 54px)
         target_size = 46 
         
         scaled_pixmap = self.original_pixmap.scaled(
@@ -155,26 +152,27 @@ class AttachmentDropWidget(QWidget):
     def _set_empty_state(self):
         self.stack.setCurrentIndex(0)
         empty_style = """
-            QFrame#drop_frame {
+            AttachmentDropWidget {
                 border: 2px dashed #555;
-                border-radius: 4px;
-                background-color: #222;
+                border-radius: 8px;
+                background-color: #1a1a1a;
             }
         """
-        self.drop_frame.setStyleSheet(empty_style)
+        self.setStyleSheet(empty_style)
         # Save for drag feedback
         self._original_style = empty_style
     
     def _set_loaded_state(self):
         self.stack.setCurrentIndex(1)
+        # เปลี่ยนเป็นกรอบทึบสีน้ำเงินเมื่อมีไฟล์
         loaded_style = """
-            QFrame#drop_frame {
-                border: 1px solid #444
+            AttachmentDropWidget {
+                border: 1px solid #3daee9;
                 border-radius: 8px;
-                background-color: #222;
+                background-color: #1e2a36;
             }
         """
-        self.drop_frame.setStyleSheet(loaded_style)
+        self.setStyleSheet(loaded_style)
         # Save for future drag feedback
         self._original_style = loaded_style
     
@@ -202,10 +200,11 @@ class AttachmentDropWidget(QWidget):
             icon_pixmap = file_icon.pixmap(48, 48)
             self.icon_container.setPixmap(icon_pixmap)
         
+        # เรียก update size ทันที
         self._update_icon_size()
         
         filename = os.path.basename(file_path)
-        truncated = truncate_filename(filename, 30)
+        truncated = truncate_filename(filename, 30) # เพิ่มความยาวตัดคำเพราะแนวนอนมีที่เยอะขึ้น
         
         self.filename_label.setText(truncated)
         self.filename_label.setToolTip(filename)
@@ -239,24 +238,27 @@ class AttachmentDropWidget(QWidget):
                 
                 event.acceptProposedAction()
                 
+                event.acceptProposedAction()
+                
                 # Visual feedback - use regex for robust replacement
                 import re
-                self._original_style = self.drop_frame.styleSheet()
+                self._original_style = self.styleSheet()
+                # Replace border color (case insensitive, handling spaces)
                 new_style = re.sub(
                     r'border:\s*2px\s+dashed\s+#555', 
                     'border: 2px dashed #3daee9', 
                     self._original_style,
                     flags=re.IGNORECASE
                 )
-                self.drop_frame.setStyleSheet(new_style)
+                self.setStyleSheet(new_style)
                 return
         
         event.ignore()
     
     def dragLeaveEvent(self, event):
-        # Restore original style
+        # Restore original style - simpler than before
         if self._original_style:
-            self.drop_frame.setStyleSheet(self._original_style)
+            self.setStyleSheet(self._original_style)
     
     def dropEvent(self, event: QDropEvent):
         success = False
@@ -265,13 +267,13 @@ class AttachmentDropWidget(QWidget):
             if urls:
                 file_path = urls[0].toLocalFile()
                 if os.path.isfile(file_path):
-                    self.set_file(file_path)
+                    self.set_file(file_path)  # This will call _set_loaded_state() internally
                     success = True
         
         # Restore original style ONLY if drop was not successful
         # (If successful, set_file -> _set_loaded_state already set the correct new style)
         if not success and self._original_style:
-            self.drop_frame.setStyleSheet(self._original_style)
+            self.setStyleSheet(self._original_style)
             
     def get_file_path(self):
         return self.file_path

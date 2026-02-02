@@ -1,0 +1,185 @@
+Folder PATH listing for volume New Volume
+Volume serial number is 04D3-D392
+D:.
+|   .gitignore
+|   main.py
+|   README.md
+|   requirements.txt
+|   structure.txt
+|   __init__.py
+|   
++---app
+|   |   __init__.py
+|   |   
+|   +---core
+|   |   |   __init__.py
+|   |   |   
+|   |   +---analysis
+|   |   |       file_structure.py
+|   |   |       report.py
+|   |   |       statistical.py
+|   |   |       visual.py
+|   |   |       __init__.py
+|   |   |       
+|   |   +---crypto
+|   |   |   |   asym_crypto.py
+|   |   |   |   hybrid.py
+|   |   |   |   sym_crypto.py
+|   |   |   |   __init__.py
+|   |   |   |   
+|   |   |   \---__pycache__
+|   |   |           asym_crypto.cpython-312.pyc
+|   |   |           sym_crypto.cpython-312.pyc
+|   |   |           __init__.cpython-312.pyc
+|   |   |           
+|   |   +---pipeline
+|   |   |       config_manager.py
+|   |   |       processor.py
+|   |   |       __init__.py
+|   |   |       
+|   |   +---stego
+|   |   |   |   __init__.py
+|   |   |   |   
+|   |   |   +---locomotive_engine
+|   |   |   |       locomotive.py
+|   |   |   |       
+|   |   |   +---lsb_plus_engine
+|   |   |   |   |   lsb_plus.py
+|   |   |   |   |   __init__.py
+|   |   |   |   |   
+|   |   |   |   +---analyzer
+|   |   |   |   |   |   entropy.py
+|   |   |   |   |   |   gradient.py
+|   |   |   |   |   |   metrics.py
+|   |   |   |   |   |   region_classifier.py
+|   |   |   |   |   |   texture_map.py
+|   |   |   |   |   |   __init__.py
+|   |   |   |   |   |   
+|   |   |   |   |   \---__pycache__
+|   |   |   |   |           entropy.cpython-312.pyc
+|   |   |   |   |           gradient.cpython-312.pyc
+|   |   |   |   |           metrics.cpython-312.pyc
+|   |   |   |   |           region_classifier.cpython-312.pyc
+|   |   |   |   |           texture_map.cpython-312.pyc
+|   |   |   |   |           __init__.cpython-312.pyc
+|   |   |   |   |           
+|   |   |   |   +---embedder
+|   |   |   |   |   |   capacity.py
+|   |   |   |   |   |   drift_control.py
+|   |   |   |   |   |   embedding.py
+|   |   |   |   |   |   embed_controller.py
+|   |   |   |   |   |   noise_predictor.py
+|   |   |   |   |   |   pixel_order.py
+|   |   |   |   |   |   __init__.py
+|   |   |   |   |   |   
+|   |   |   |   |   \---__pycache__
+|   |   |   |   |           capacity.cpython-312.pyc
+|   |   |   |   |           drift_control.cpython-312.pyc
+|   |   |   |   |           embedding.cpython-312.pyc
+|   |   |   |   |           embed_controller.cpython-312.pyc
+|   |   |   |   |           noise_predictor.cpython-312.pyc
+|   |   |   |   |           pixel_order.cpython-312.pyc
+|   |   |   |   |           __init__.cpython-312.pyc
+|   |   |   |   |           
+|   |   |   |   +---extractor
+|   |   |   |   |   |   bit_reader.py
+|   |   |   |   |   |   extraction.py
+|   |   |   |   |   |   extract_controller.py
+|   |   |   |   |   |   __init__.py
+|   |   |   |   |   |   
+|   |   |   |   |   \---__pycache__
+|   |   |   |   |           bit_reader.cpython-312.pyc
+|   |   |   |   |           extraction.cpython-312.pyc
+|   |   |   |   |           extract_controller.cpython-312.pyc
+|   |   |   |   |           __init__.cpython-312.pyc
+|   |   |   |   |           
+|   |   |   |   +---lsb_utils
+|   |   |   |   |   |   bitstream.py
+|   |   |   |   |   |   header.py
+|   |   |   |   |   |   metrics.py
+|   |   |   |   |   |   prng.py
+|   |   |   |   |   |   __init__.py
+|   |   |   |   |   |   
+|   |   |   |   |   \---__pycache__
+|   |   |   |   |           bitstream.cpython-312.pyc
+|   |   |   |   |           header.cpython-312.pyc
+|   |   |   |   |           prng.cpython-312.pyc
+|   |   |   |   |           __init__.cpython-312.pyc
+|   |   |   |   |           
+|   |   |   |   \---__pycache__
+|   |   |   |           lsb_plus.cpython-312.pyc
+|   |   |   |           __init__.cpython-312.pyc
+|   |   |   |           
+|   |   |   +---metadata_engine
+|   |   |   |       metadata.py
+|   |   |   |       
+|   |   |   \---__pycache__
+|   |   |           __init__.cpython-312.pyc
+|   |   |           
+|   |   \---__pycache__
+|   |           __init__.cpython-312.pyc
+|   |           
+|   +---ui
+|   |   |   main_window.py
+|   |   |   styles.py
+|   |   |   __init__.py
+|   |   |   
+|   |   +---assets
+|   |   +---components
+|   |   |   |   attachment_drop_widget.py
+|   |   |   |   charts.py
+|   |   |   |   file_dropper.py
+|   |   |   |   image_viewer.py
+|   |   |   |   loco_file.py
+|   |   |   |   __init__.py
+|   |   |   |   
+|   |   |   \---__pycache__
+|   |   |           attachment_drop_widget.cpython-312.pyc
+|   |   |           loco_file.cpython-312.pyc
+|   |   |           __init__.cpython-312.pyc
+|   |   |           
+|   |   +---dialogs
+|   |   |   |   text_editor_dialog.py
+|   |   |   |   
+|   |   |   \---__pycache__
+|   |   |           text_editor_dialog.cpython-312.pyc
+|   |   |           
+|   |   +---tabs
+|   |   |   |   analyze_tab.py
+|   |   |   |   embed_tab.py
+|   |   |   |   extract_tab.py
+|   |   |   |   
+|   |   |   \---__pycache__
+|   |   |           embed_tab.cpython-312.pyc
+|   |   |           __init__.cpython-312.pyc
+|   |   |           
+|   |   \---__pycache__
+|   |           main_window.cpython-312.pyc
+|   |           styles.cpython-312.pyc
+|   |           __init__.cpython-312.pyc
+|   |           
+|   +---utils
+|   |   |   exceptions.py
+|   |   |   file_io.py
+|   |   |   gui_helpers.py
+|   |   |   helpers.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           exceptions.cpython-312.pyc
+|   |           file_io.cpython-312.pyc
+|   |           gui_helpers.cpython-312.pyc
+|   |           __init__.cpython-312.pyc
+|   |           
+|   \---__pycache__
+|           __init__.cpython-312.pyc
+|           
++---resources
+|   +---sample_images
+|   \---sample_payloads
+\---tests
+        test_crypto.py
+        test_locomotive.py
+        test_lsb.py
+        test_pipeline.py
+        

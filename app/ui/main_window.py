@@ -6,10 +6,12 @@ from PyQt6.QtWidgets import (
     QTabWidget
 )
 
-from app.ui.tabs.embed_tab import EmbedTab
+
 # from extract_tab import ExtractTab
 # from key_tab import KeyTab
 from app.ui.styles import DARK_STYLE
+from app.ui.tabs.embed_tab import EmbedTab
+from app.ui.tabs.embed_tab_mock import EmbedTabMockUp
 
 # ============================================================================
 # MAIN APPLICATION
@@ -26,7 +28,7 @@ class MainWindow(QMainWindow):
         
         tabs = QTabWidget()
         tabs.addTab(EmbedTab(), "Embed")
-        tabs.addTab(QWidget(), "Extract")
+        tabs.addTab(EmbedTabMockUp(), "Extract")
         tabs.addTab(QWidget(), "Key Manager")
         
         self.setCentralWidget(tabs)
