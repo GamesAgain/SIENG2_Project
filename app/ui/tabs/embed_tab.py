@@ -1,55 +1,15 @@
-# ============================================================================
-# 1. STANDARD LIBRARY IMPORTS
-# ============================================================================
-import sys
+# PYQT6 FRAMEWORK (GUI)
 import os
-from datetime import datetime
-from typing import Optional
-
-from app.core.stego.lsb_plus_engine.lsb_plus import LSB_Plus
-from app.utils.exceptions import StegoEngineError
-from app.utils.file_io import format_file_size
-
-# ============================================================================
-# 2. THIRD-PARTY LIBRARIES (LOGIC & PROCESSING)
-# ============================================================================
-# -- Pillow (Image Processing) --
-try:
-    from PIL import Image, ExifTags
-except ImportError:
-    Image = None
-    ExifTags = None
-    print("Warning: Pillow not found. Image features will be disabled.")
-
-# -- Mutagen (Audio Metadata) --
-try:
-    import mutagen
-    from mutagen.mp3 import MP3
-    from mutagen.id3 import (
-        ID3, COMM, POPM, PRIV, TALB, TBPM, TCOM, TCON, TCOP, 
-        TIT2, TMOO, TPE1, TPE2, TPE3, TPUB, TRCK, TXXX, TYER, WXXX
-    )
-except ImportError:
-    mutagen = None
-    print("Warning: Mutagen not found. Audio features will be disabled.")
-
-# -- Piexif (EXIF Data) --
-try:
-    import piexif
-except ImportError:
-    piexif = None
-    print("Warning: Piexif not found. EXIF editing will be disabled.")
-
-# ============================================================================
-# 3. PYQT6 FRAMEWORK (GUI)
-# ============================================================================
 from PyQt6.QtCore import (
     Qt, QTimer, QSize, pyqtSignal
 )
 
 from PyQt6.QtGui import (
-    QPixmap, QFont, QDragEnterEvent, QDropEvent, QResizeEvent
+    QPixmap, QFont, QDragEnterEvent, QDropEvent, QResizeEvent, QIcon, QPainter, QColor, QPen
 )
+from PyQt6.QtCore import QMimeData
+import base64
+from PyQt6.QtCore import QByteArray
 
 from PyQt6.QtWidgets import (
     # Windows & Containers
@@ -57,31 +17,28 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QTabWidget, QGroupBox, QScrollArea, QSplitter,
     
     # Layouts
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QSizePolicy,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QSizePolicy, QStackedLayout,
     
     # Input Widgets
     QPushButton, QLineEdit, QTextEdit, QComboBox,
     
     # Display Widgets
-    QLabel, QProgressBar, QListWidget, QListWidgetItem, QMessageBox,
+    QLabel, QProgressBar, QListWidget, QListWidgetItem, QMessageBox, QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHeaderView,
     
     # Utilities
     QFileDialog, QStyle
 )
 
-# ============================================================================
-# 4. LOCAL APPLICATION IMPORTS
-# ============================================================================
-# -- Utils (เครื่องมือช่วย) --
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+    
+    
+from app.core.stego.lsb_plus.lsbpp import LSBPP
+from app.utils.file_io import format_file_size
 from app.utils.gui_helpers import disconnect_signal_safely
-
-# -- Custom Dialogs (หน้าต่างแยก) --
-from app.ui.dialogs.text_editor_dialog import TextEditorDialog
-
-# -- Custom Components (ชิ้นส่วนหน้าจอ) --
-from app.ui.components.loco_file import LocoFileTile
-
-from app.ui.components.attachment_drop_widget import AttachmentDropWidget
 
 
 # ============================================================================
@@ -111,6 +68,40 @@ QListWidget::item:hover {
     border-radius: 6px;
 }
 """
+
+# Text file extensions for LSB++ mode (100+ file types)
+TEXT_FILE_EXTENSIONS = {
+    # Text files
+    '.txt', '.md', '.markdown', '.rst', '.csv', '.tsv', 
+    '.json', '.xml', '.yaml', '.yml', '.toml', '.log',
+    
+    # Code files - Python, JavaScript, TypeScript
+    '.py', '.pyw', '.pyx', '.js', '.jsx', '.ts', '.tsx', '.mjs',
+    
+    # Code files - Java, C/C++, C#
+    '.java', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.cs',
+    
+    # Code files - Other languages
+    '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala',
+    '.r', '.m', '.lua', '.pl', '.pm', '.sh', '.bash', '.zsh',
+    
+    # Web files
+    '.html', '.htm', '.css', '.scss', '.sass', '.less',
+    '.vue', '.svelte', '.astro',
+    
+    # Config files
+    '.ini', '.conf', '.cfg', '.config', '.env', '.properties',
+    
+    # Script files
+    '.sql', '.bat', '.cmd', '.ps1', '.psm1',
+    
+    # Data files
+    '.geojson', '.kml', '.gpx', '.vcf',
+    
+    # Other
+    '.gitignore', '.dockerignore', '.editorconfig', '.prettierrc',
+    '.eslintrc', '.babelrc', '.npmrc', '.nvmrc'
+}
 
 # ============================================================================
 # CUSTOM WIDGETS
@@ -157,44 +148,241 @@ class DraggablePreviewLabel(QLabel):
         # Restore original style
         if self._original_style:
             self.setStyleSheet(self._original_style)
-
-# ============================================================================
-# MAIN EMBED TAB
-# ============================================================================
+            
+from app.ui.components.attachment_drop_widget import AttachmentDropWidget
+from app.ui.components.metadata_drop_widget import MetadataDropWidget
+from app.ui.dialogs.text_editor_dialog import TextEditorDialog
 
 class EmbedTab(QWidget):
-    """Main embedding tab with mode switching capabilities."""
-    
     def __init__(self):
-        super().__init__()
-        self.current_image_path = None
-        self.locomotive_files = []
-        self.meta_fields = {}
-        self.embed_pipeline = []
-        self.extract_pipeline = []
-        self.original_preview_pixmaps = {}  # Store original pixmaps for scaling
-        
-        self._init_ui()
-
+       super().__init__()
+       
+       self.original_preview_pixmaps = {}  # Store original pixmaps for scaling
+       self._init_ui()
+       
     def _init_ui(self):
-        # Set minimum size for the tab to prevent content overflow
         self.setMinimumSize(800, 500)
         
         main_layout = QHBoxLayout(self)
         main_layout.setSpacing(8)
         main_layout.setContentsMargins(8, 8, 8, 8)
-
+        
         left_panel = self._create_left_panel()
         self.right_panel_stack = self._create_right_panel()
-
-        # Responsive stretch ratio: left panel gets 35%, right panel gets 65%
+        
+        #ratio: left panel gets 35%, right panel gets 65%
         main_layout.addWidget(left_panel, 35)
         main_layout.addWidget(self.right_panel_stack, 65)
-
+        
         self.on_technique_changed()
+                
+    def on_technique_changed(self):
+        current_tech = self.tech_combo.currentText()
+        is_LSBPP = "LSB++" in current_tech
+        is_locomotive = "Locomotive" in current_tech
+        is_metadata = "Metadata" in current_tech
+        
+        disconnect_signal_safely(self.carrier_browse_btn.clicked)
+        
+        if is_LSBPP:
+            self.carrier_browse_btn.clicked.connect(self.browse_single_image)     
+            
 
+    def _on_run_embed(self):
+        """
+        Main execution handler for embedding process.
+        Connects UI inputs -> Engine -> Output File
+        """
+        # 1. Validation: เช็คว่าเลือกรูป Cover หรือยัง
+        if not hasattr(self, 'current_image_path') or not self.current_image_path:
+            QMessageBox.warning(self, "Missing Input", "Please select a carrier image first!")
+            return
+
+        # 1.1 Validation: เช็ค Payload (ข้อความ หรือ ไฟล์)
+        current_tab_index = self.payload_tabs.currentIndex()
+        payload_data = None
+        
+        if current_tab_index == TAB_INDEX_TEXT:
+            # กรณี Text Tab
+            text_content = self.payload_text.toPlainText()
+            if not text_content:
+                QMessageBox.warning(self, "Missing Input", "Please enter a message to embed!")
+                return
+            payload_data = text_content
+            
+        elif current_tab_index == TAB_INDEX_FILE:
+            # กรณี File Tab (อ่านไฟล์แล้วแปลงเป็น Text หรือ Bytes ตามแต่ Engine รองรับ)
+            # สำหรับ LSB++ ในตัวอย่างนี้ รับเป็น text ดังนั้นเราจะอ่านไฟล์ text
+            file_path = self.payload_file_path.text()
+            if not file_path or not os.path.exists(file_path):
+                QMessageBox.warning(self, "Missing Input", "Please select a valid payload file!")
+                return
+            
+            try:
+                # ลองอ่านไฟล์เป็น text (UTF-8)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    payload_data = f.read()
+            except Exception as e:
+                QMessageBox.critical(self, "File Error", f"Could not read payload file:\n{str(e)}")
+                return
+
+        # 2. Mapping Mode: แปลงค่าจาก ComboBox
+        # index 0: Password, 1: Public Key (ตามลำดับใน _build_encryption_section)
+        enc_mode_idx = self.enc_combo.currentIndex()
+        
+        # ตรวจสอบว่าเปิด Encryption หรือไม่
+        is_encrypted = self.encryption_box.isChecked()
+        
+        mode_str = "none"
+        pwd = None
+        pub_key = None
+        
+        if is_encrypted:
+            if enc_mode_idx == 0: # Password
+                mode_str = "password"
+                pwd = self.passphrase.text()
+                confirm_pwd = self.confirmpassphrase.text()
+                
+                if not pwd:
+                    QMessageBox.warning(self, "Missing Input", "Password cannot be empty!")
+                    return
+                if pwd != confirm_pwd:
+                    QMessageBox.warning(self, "Input Error", "Passwords do not match!")
+                    return
+                    
+            elif enc_mode_idx == 1: # Public Key
+                mode_str = "public"
+                pub_key = self.public_key_edit.text()
+                if not pub_key or not os.path.exists(pub_key):
+                    QMessageBox.warning(self, "Missing Input", "Please select a valid Public Key file (.pem)!")
+                    return
+
+        # 3. UI Feedback: เริ่มทำงาน (แสดง Progress bar แบบ Indeterminate)
+        self.standalone_status_label.setText("Embedding... Please wait.")
+        self.standalone_progress_bar.setRange(0, 0) # Indeterminate mode
+        self.btn_exec.setEnabled(False)
+        QApplication.processEvents() # Force UI update
+
+        # 4. Execution: เริ่มการฝังข้อมูล
+        try:
+            # สร้าง Instance ของ Engine
+            engine = LSBPP()
+
+            # เรียกใช้ฟังก์ชัน embed
+            # หมายเหตุ: payload_data ตอนนี้เป็น string (จากการอ่าน text file หรือ text box)
+            stego_rgb, metrics = engine.embed(
+                cover_path=self.current_image_path,
+                payload_text=payload_data,
+                encrypt_mode=mode_str,
+                password=pwd,
+                public_key_path=pub_key
+            )
+            
+            # หยุด Progress bar
+            self.standalone_progress_bar.setRange(0, 100)
+            self.standalone_progress_bar.setValue(100)
+            self.standalone_status_label.setText("Processing Complete.")
+
+            # 5. Saving: เปิดหน้าต่างให้เลือกที่เซฟไฟล์
+            # สร้างชื่อไฟล์ default: original_name_stego.png
+            orig_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
+            default_save_name = f"{orig_name}_stego.png"
+            
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, 
+                "Save Stego Image", 
+                default_save_name, 
+                "PNG Images (*.png)"
+            )
+
+            if save_path:
+                # แปลง NumPy Array (RGB) กลับเป็นรูปภาพแล้วบันทึก
+                if Image: # เช็คว่า PIL ถูก import มาจริง
+                    final_image = Image.fromarray(stego_rgb)
+                    final_image.save(save_path)
+
+                    # 6. Success Report
+                    info_msg = (
+                        f"Embedding Completed Successfully!\n\n"
+                        f"Saved to: {save_path}\n\n"
+                        f"--- Quality Metrics ---\n"
+                        f"PSNR: {metrics.psnr:.2f} dB\n"
+                        f"SSIM: {metrics.ssim:.4f}\n"
+                        f"Drift: {metrics.hist_drift:.4f}"
+                    )
+                    QMessageBox.information(self, "Success", info_msg)
+                    self.standalone_status_label.setText("Saved successfully.")
+                else:
+                    raise ImportError("PIL (Pillow) library is missing.")
+            else:
+                self.standalone_status_label.setText("Save cancelled.")
+
+        except Exception as e:
+            # 7. Error Handling
+            self.standalone_status_label.setText("Error occurred.")
+            self.standalone_progress_bar.setValue(0)
+            QMessageBox.critical(self, "Embedding Error", str(e))
+            
+        finally:
+            # คืนค่าปุ่มให้กดได้อีกครั้ง
+            self.btn_exec.setEnabled(True)
+            # Reset progress bar style if needed
+            if self.standalone_progress_bar.maximum() == 0:
+                self.standalone_progress_bar.setRange(0, 100)
+                self.standalone_progress_bar.setValue(0)
+
+        
+    def browse_single_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Carrier Image", "", "PNG Images (*.png)"
+        )
+        if file_path:
+            self.current_image_path = file_path
+            self.carrier_edit.setText(file_path)
+            self._load_image_preview(file_path)    
+            payload_size = self._update_payload_size()
+            self._update_stats(file_path, payload_size)
+            self.update_capacity_indicator()
+            
+    def _update_payload_size(self):
+        return len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
+            
+    def _load_image_preview(self, image_path):
+        pixmap = QPixmap(image_path)
+        self.original_preview_pixmaps = pixmap
+        
+        if not pixmap.isNull():
+            self._update_preview_scaling()
+            
+    def _update_preview_scaling(self):
+        """Update all preview labels with proper scaling based on current size."""
+        # 1. เช็คก่อนว่ามีรูปภาพให้ประมวลผลไหม (กัน Crash)
+        pixmap = getattr(self, 'original_preview_pixmaps', None)
+        if pixmap is None or pixmap.isNull():
+            return
+
+        # 2. คำนวณขนาด
+        label_width = self.preview_label.width()
+        if label_width <= 0:
+            label_width = 500
+            
+        max_height = min(500, int(self.height() * 0.5))
+        if max_height < 250:
+            max_height = 250
+        
+        # 3. ประมวลผลภาพ
+        scaled_pixmap = pixmap.scaled(
+            label_width, max_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+        # 4. อัปเดต UI 
+        self.preview_label.setPixmap(scaled_pixmap)
+        
+        
+            
     def _create_left_panel(self):
-        # Create scrollable container for left panel (like Kleopatra)
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -219,1306 +407,8 @@ class EmbedTab(QWidget):
         
         scroll_area.setWidget(widget)
         return scroll_area
-
-    def _create_right_panel(self):
-        stack = QStackedWidget()
-        stack.addWidget(self._create_standalone_page())
-        stack.addWidget(self._create_locomotive_page())
-        stack.addWidget(self._create_configurable_page())
-        return stack
-
-    def _create_standalone_page(self):
-        """
-        REDESIGNED Standalone Page with Stats Display
-        Layout: Preview (with stats) → Buttons
-        """
-        page = QWidget()
-        page.setMinimumSize(400, 400)
-        
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
-        
-        # Wrap content stack in scroll area to prevent overflow
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(6)
-        
-        self.standalone_content_stack = QStackedWidget()
-        self.standalone_content_stack.addWidget(self._build_preview_section_with_stats("std"))
-        self.standalone_content_stack.addWidget(self._create_metadata_editor_container("std"))
-        
-        content_layout.addWidget(self.standalone_content_stack, 1)
-        scroll_area.setWidget(content_widget)
-        
-        layout.addWidget(scroll_area, 1)
-        layout.addWidget(self._build_execution_group("Embed Data"), 0)
-        return page
-
-    def _create_locomotive_page(self):
-        page = QWidget()
-        page.setMinimumSize(400, 400)
-        
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
-        
-        # Scroll area for locomotive list to prevent overflow
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        
-        self.loco_list_box_std = self._build_locomotive_list_section("std")
-        scroll_area.setWidget(self.loco_list_box_std)
-        
-        layout.addWidget(scroll_area, 1)
-        layout.addWidget(self._build_execution_group("Execute Locomotive Embedding"), 0)
-        return page
-
-    def _create_configurable_page(self):
-        page = QWidget()
-        page.setMinimumSize(400, 500)
-        
-        main_layout = QVBoxLayout(page)
-        main_layout.setContentsMargins(4, 4, 4, 4)
-        main_layout.setSpacing(6)
-        
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setChildrenCollapsible(False)
-        
-        # Preview section with scroll area
-        preview_scroll = QScrollArea()
-        preview_scroll.setWidgetResizable(True)
-        preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        preview_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        preview_scroll.setMinimumHeight(200)
-        
-        self.config_preview_stack = QStackedWidget()
-        self.config_preview_stack.addWidget(self._build_preview_section("cfg"))
-        self.config_preview_stack.addWidget(self._build_locomotive_list_section("cfg"))
-        self.config_preview_stack.addWidget(self._build_metadata_section("cfg"))
-        
-        preview_scroll.setWidget(self.config_preview_stack)
-        splitter.addWidget(preview_scroll)
-        
-        # Editor section with scroll area
-        editor_scroll = QScrollArea()
-        editor_scroll.setWidgetResizable(True)
-        editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        editor_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        editor_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        editor_scroll.setMinimumHeight(200)
-        
-        editor_container = QWidget()
-        editor_layout = QVBoxLayout(editor_container)
-        editor_layout.setContentsMargins(4, 4, 4, 4)
-        editor_layout.setSpacing(6)
-        
-        editor_layout.addWidget(self._build_dual_pipeline_editor(), 1)
-        
-        guide = self._build_guide_section()
-        guide.setMinimumHeight(80)
-        guide.setMaximumHeight(150)
-        editor_layout.addWidget(guide, 0)
-        
-        editor_layout.addWidget(self._build_execution_group("Export Config"), 0)
-        
-        editor_scroll.setWidget(editor_container)
-        splitter.addWidget(editor_scroll)
-        
-        splitter.setSizes([400, 300])
-        splitter.setCollapsible(0, False)
-        splitter.setCollapsible(1, False)
-        
-        main_layout.addWidget(splitter, 1)
-        return page
-
-    def _create_metadata_editor_container(self, mode):
-        container = QWidget()
-        container.setMinimumHeight(300)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(4, 4, 4, 4)
-        
-        group_box = QGroupBox("Metadata Editor")
-        group_box.setMinimumHeight(250)
-        group_layout = QVBoxLayout(group_box)
-        group_layout.setContentsMargins(6, 12, 6, 6)
-        group_layout.setSpacing(6)
-        
-        # Scroll area for metadata container
-        meta_scroll = QScrollArea()
-        meta_scroll.setWidgetResizable(True)
-        meta_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        meta_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        meta_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        meta_scroll.setMinimumHeight(200)
-        
-        meta_container = QWidget()
-        if mode == "std":
-            self.meta_container_std = meta_container
-        else:
-            self.meta_container_cfg = meta_container
-        
-        meta_scroll.setWidget(meta_container)
-        group_layout.addWidget(meta_scroll, 1)
-        layout.addWidget(group_box, 1)
-        
-        return container
-
-    def _build_dual_pipeline_editor(self):
-        box = QGroupBox("Configurable Editor")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(6, 12, 6, 6)
-        layout.setSpacing(6)
-        
-        self.pipeline_tabs = QTabWidget()
-        
-        embed_tab = self._create_pipeline_tab("embed")
-        extract_tab = self._create_pipeline_tab("extract")
-        
-        self.pipeline_tabs.addTab(embed_tab, "Embed Pipeline")
-        self.pipeline_tabs.addTab(extract_tab, "Extract Pipeline")
-        
-        layout.addWidget(self.pipeline_tabs, 1)
-        box.setLayout(layout)
-        return box
-
-    def _create_pipeline_tab(self, tab_type):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-        
-        if tab_type == "embed":
-            list_widget = QListWidget()
-            self.embed_list = list_widget
-            layout.addWidget(list_widget, 1)
-            
-            btn_row = QHBoxLayout()
-            btn_row.setSpacing(4)
-            self.btn_embed_data = QPushButton("Embed Data")
-            self.btn_embed_remove = QPushButton("- Remove")
-            self.btn_embed_up = QPushButton("↑ Up")
-            self.btn_embed_down = QPushButton("↓ Down")
-            
-            self.btn_embed_data.setStyleSheet("font-weight: bold; background-color: #2d5a75;")
-            
-            self.btn_embed_data.clicked.connect(self.add_to_embed_pipeline)
-            self.btn_embed_remove.clicked.connect(self.remove_from_embed_pipeline)
-            self.btn_embed_up.clicked.connect(lambda: self.move_pipeline_item(self.embed_list, -1))
-            self.btn_embed_down.clicked.connect(lambda: self.move_pipeline_item(self.embed_list, 1))
-            
-            btn_row.addWidget(self.btn_embed_data)
-            btn_row.addWidget(self.btn_embed_remove)
-            btn_row.addWidget(self.btn_embed_up)
-            btn_row.addWidget(self.btn_embed_down)
-            
-            layout.addLayout(btn_row, 0)
-        else:
-            list_widget = QListWidget()
-            self.extract_list = list_widget
-            layout.addWidget(list_widget, 1)
-            
-            extract_btn_row = QHBoxLayout()
-            extract_btn_row.setSpacing(4)
-            self.btn_extract_up = QPushButton("↑ Up")
-            self.btn_extract_down = QPushButton("↓ Down")
-            
-            self.btn_extract_up.clicked.connect(lambda: self.move_pipeline_item(self.extract_list, -1))
-            self.btn_extract_down.clicked.connect(lambda: self.move_pipeline_item(self.extract_list, 1))
-            
-            extract_btn_row.addWidget(self.btn_extract_up)
-            extract_btn_row.addWidget(self.btn_extract_down)
-            extract_btn_row.addStretch()
-            
-            layout.addLayout(extract_btn_row, 0)
-        
-        return tab
-
-    def add_to_embed_pipeline(self):
-        current_tech = self.tech_combo.currentText()
-        is_encrypted = self.encryption_box.isChecked()
-        
-        tech_name = current_tech.split("(")[0].strip()
-        step_num = len(self.embed_pipeline) + 1
-        
-        display_text = f"Step {step_num}: {tech_name}"
-        if is_encrypted:
-            display_text += " (Encrypted)"
-        
-        self.embed_list.addItem(display_text)
-        self.extract_list.addItem(display_text)
-        
-        config = {
-            'technique': current_tech,
-            'encrypted': is_encrypted,
-            'display': display_text
-        }
-        self.embed_pipeline.append(config)
-        self.extract_pipeline.append(config)
-
-    def remove_from_embed_pipeline(self):
-        current_row = self.embed_list.currentRow()
-        if current_row >= 0:
-            self.embed_list.takeItem(current_row)
-            self.extract_list.takeItem(current_row)
-            
-            if current_row < len(self.embed_pipeline):
-                self.embed_pipeline.pop(current_row)
-                self.extract_pipeline.pop(current_row)
-            
-            self._renumber_pipeline_items()
-
-    def move_pipeline_item(self, list_widget, direction):
-        current_row = list_widget.currentRow()
-        if current_row < 0:
-            return
-        
-        new_row = current_row + direction
-        if new_row < 0 or new_row >= list_widget.count():
-            return
-        
-        item = list_widget.takeItem(current_row)
-        list_widget.insertItem(new_row, item)
-        list_widget.setCurrentRow(new_row)
-        
-        if list_widget == self.embed_list:
-            self.embed_pipeline[current_row], self.embed_pipeline[new_row] = \
-                self.embed_pipeline[new_row], self.embed_pipeline[current_row]
-        else:
-            self.extract_pipeline[current_row], self.extract_pipeline[new_row] = \
-                self.extract_pipeline[new_row], self.extract_pipeline[current_row]
-
-    def _renumber_pipeline_items(self):
-        for i in range(self.embed_list.count()):
-            text = self.embed_list.item(i).text()
-            parts = text.split(":", 1)
-            if len(parts) == 2:
-                new_text = f"Step {i+1}:{parts[1]}"
-                self.embed_list.item(i).setText(new_text)
-                self.extract_list.item(i).setText(new_text)
-
-    def reset_inputs(self):
-        self.current_image_path = None
-        self.locomotive_files = []
-        self.meta_fields = {}
-        
-        self.carrier_edit.clear()
-        
-        self._reset_preview_label(self.preview_label_std, self.preview_info_label_std)
-        self._reset_preview_label(self.preview_label_cfg, self.preview_info_label_cfg)
-        self._reset_preview_label(self.preview_label_meta_left, self.preview_info_label_meta_left)
-        
-        self.payload_text.clear()
-        self.lbl_capacity.setText("capacity: 0/100")
-        self.lbl_capacity.setStyleSheet("color: #aaa;")
-        
-        if hasattr(self, 'attachment_widget'):
-            self.attachment_widget.clear_file()
-        self.payload_file_path.clear()
-        
-        self.loco_list_widget_std.clear()
-        self.loco_list_widget_cfg.clear()
-        self.loco_group_box_std.setTitle("Selected Files (0 fragments)")
-        self.loco_group_box_cfg.setTitle("Selected Files (0 fragments)")
-        
-        self._clear_metadata_forms()
-
-    def _reset_preview_label(self, preview_label, preview_info_label):
-        if preview_label:
-            preview_label.clear()
-            preview_label.setText("Preview Area\n(No File Selected)")
-            preview_label.setStyleSheet(
-                "border: 2px dashed #555; background-color: #222; "
-                "color: #888; font-size: 14px;"
-            )
-            preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Clear stored pixmap
-            if preview_label == self.preview_label_std:
-                self.original_preview_pixmaps.pop('std', None)
-            elif preview_label == self.preview_label_cfg:
-                self.original_preview_pixmaps.pop('cfg', None)
-            elif preview_label == self.preview_label_meta_left:
-                self.original_preview_pixmaps.pop('meta_left', None)
-        if preview_info_label:
-            preview_info_label.clear()
-            preview_info_label.hide()
-
-    def _clear_metadata_forms(self):
-        """Clear dynamic metadata form widgets."""
-        # Clear standalone metadata form
-        if hasattr(self, 'meta_container_std') and self.meta_container_std and self.meta_container_std.layout() is not None:
-            while self.meta_container_std.layout().count():
-                item = self.meta_container_std.layout().takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-        
-        # Clear configurable metadata form
-        if hasattr(self, 'meta_container_cfg') and self.meta_container_cfg and self.meta_container_cfg.layout() is not None:
-            while self.meta_container_cfg.layout().count():
-                item = self.meta_container_cfg.layout().takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-
-    def on_mode_changed(self):
-        is_configurable = "Configurable" in self.mode_combo.currentText()
-        
-        if is_configurable:
-            self.right_panel_stack.setCurrentIndex(PAGE_CONFIGURABLE)
-            self.tech_combo.setDisabled(False)
-            self._update_configurable_preview_stack()
-            self._connect_browse_signals_for_current_technique()
-        else:
-            self.tech_combo.setDisabled(False)
-            self.on_technique_changed()
-
-    def _update_configurable_preview_stack(self):
-        if not self.config_preview_stack:
-            return
-            
-        current_tech = self.tech_combo.currentText()
-        if "Locomotive" in current_tech:
-            self.config_preview_stack.setCurrentIndex(1)
-        elif "Metadata" in current_tech:
-            self.config_preview_stack.setCurrentIndex(2)
-        else:
-            self.config_preview_stack.setCurrentIndex(0)
-
-    def _connect_browse_signals_for_current_technique(self):
-        current_tech = self.tech_combo.currentText()
-        is_locomotive = "Locomotive" in current_tech
-        is_metadata = "Metadata" in current_tech
-        
-        disconnect_signal_safely(self.carrier_browse_btn.clicked)
-        
-        if is_locomotive:
-            self.carrier_edit.setPlaceholderText("Select multiple PNG images...")
-            self.carrier_browse_btn.clicked.connect(self.browse_locomotive_files_replace)
-            self.carrier_browse_btn.setText("Browse PNGs")
-        elif is_metadata:
-            self.carrier_edit.setPlaceholderText("Select PNG, JPEG, or MP3...")
-            self.carrier_browse_btn.clicked.connect(self.browse_metadata_carrier)
-            self.carrier_browse_btn.setText("Browse File")
-        else:
-            self.carrier_edit.setPlaceholderText("Select Single PNG Image...")
-            self.carrier_browse_btn.clicked.connect(self.browse_single_image)
-            self.carrier_browse_btn.setText("Browse")
-        
-        if is_metadata:
-            self.payload_stack.setCurrentIndex(1)
-        elif is_locomotive:
-            self.payload_stack.setCurrentIndex(0)
-            self.payload_tabs.setCurrentIndex(TAB_INDEX_FILE)
-            self.payload_file_path.setPlaceholderText("Path to secret file (DOCX, PDF, ZIP)...")
-            if hasattr(self, 'attachment_widget'):
-                try:
-                    self.attachment_widget.empty_label.setText("Drag & Drop\n(All file types)")
-                except Exception:
-                    pass
-        else:
-            self.payload_stack.setCurrentIndex(0)
-            self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-            self.payload_file_path.setPlaceholderText("Select Text File (.txt)...")
-            if hasattr(self, 'attachment_widget'):
-                try:
-                    self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files only: .txt, .md, .csv, ...)")
-                except Exception:
-                    pass
-
-    def on_technique_changed(self):
-        is_configurable = self.mode_combo.currentText() == "Configurable Model"
-        
-        if is_configurable:
-            self._update_configurable_preview_stack()
-        else:
-            self.reset_inputs()
-
-        current_tech = self.tech_combo.currentText()
-        is_locomotive = "Locomotive" in current_tech
-        is_metadata = "Metadata" in current_tech
-        
-        disconnect_signal_safely(self.carrier_browse_btn.clicked)
-
-        if is_locomotive:
-            if not is_configurable:
-                self._switch_to_locomotive_mode()
-            self.carrier_browse_btn.clicked.connect(self.browse_locomotive_files_replace)
-            self.carrier_edit.setPlaceholderText("Select multiple PNG images...")
-        elif is_metadata:
-            if not is_configurable:
-                self._switch_to_metadata_mode()
-            self.carrier_browse_btn.clicked.connect(self.browse_metadata_carrier)
-        else:
-            if not is_configurable:
-                self._switch_to_standalone_mode()
-            self.carrier_browse_btn.clicked.connect(self.browse_single_image)
-
-        if is_metadata:
-            self.payload_stack.setCurrentIndex(1)
-        elif is_locomotive:
-            self.payload_stack.setCurrentIndex(0)
-            self.payload_tabs.setCurrentIndex(TAB_INDEX_FILE)
-            self.payload_file_path.setPlaceholderText("Path to secret file (DOCX, PDF, ZIP)...")
-            if hasattr(self, 'attachment_widget'):
-                try:
-                    self.attachment_widget.empty_label.setText("Drag & Drop\n(All file types)")
-                except Exception:
-                    pass
-        else:
-            self.payload_stack.setCurrentIndex(0)
-            self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-            self.payload_file_path.setPlaceholderText("Select Text File (.txt)...")
-            if hasattr(self, 'attachment_widget'):
-                try:
-                    self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files)")
-                except Exception:
-                    pass
-
-    def _switch_to_locomotive_mode(self):
-        self.right_panel_stack.setCurrentIndex(PAGE_LOCOMOTIVE)
-        self.carrier_browse_btn.setText("Browse PNGs")
-        if hasattr(self, 'standalone_content_stack'):
-            self.standalone_content_stack.setCurrentIndex(0)
-
-    def _switch_to_standalone_mode(self):
-        self.right_panel_stack.setCurrentIndex(PAGE_STANDALONE)
-        self.carrier_edit.setPlaceholderText("Select Single PNG Image...")
-        self.carrier_browse_btn.setText("Browse")
-        if hasattr(self, 'standalone_content_stack'):
-            self.standalone_content_stack.setCurrentIndex(0)
-
-    def _switch_to_metadata_mode(self):
-        self.right_panel_stack.setCurrentIndex(PAGE_STANDALONE)
-        self.carrier_edit.setPlaceholderText("Select PNG, JPEG, or MP3...")
-        self.carrier_browse_btn.setText("Browse File")
-        if hasattr(self, 'standalone_content_stack'):
-            self.standalone_content_stack.setCurrentIndex(1)
-
-    # ========================================================================
-    # FILE BROWSING
-    # ========================================================================
-
-    def browse_single_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Carrier Image", "", "PNG Images (*.png)"
-        )
-        if file_path:
-            self.current_image_path = file_path
-            self.carrier_edit.setText(file_path)
-            self._load_image_preview(file_path)
-            # Update stats if they exist
-            if hasattr(self, 'stat_image_size'):
-                payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-                self._update_stats(file_path, payload_size)
     
-    # ========================================================================
-    # REDESIGNED PREVIEW SECTION WITH STATS
-    # ========================================================================
-    
-    def _build_preview_section_with_stats(self, suffix):
-        """Preview section with stats display (for LSB++ mode)"""
-        group_box = QGroupBox("Preview")
-        group_layout = QVBoxLayout()
-        group_layout.setContentsMargins(6, 12, 6, 6)
-        group_layout.setSpacing(6)
-        
-        # Preview Label with drag-and-drop support
-        self.preview_label_std = DraggablePreviewLabel()
-        self.preview_label_std.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label_std.setText("No Image Selected\n\nSelect cover image from left panel\nor drag & drop PNG file here")
-        self.preview_label_std.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #555;
-                background-color: #222;
-                color: #888;
-                font-size: 10pt;
-            }
-        """)
-        self.preview_label_std.setMinimumHeight(200)
-        self.preview_label_std.setScaledContents(False)
-        
-        # Connect drag-drop signal
-        self.preview_label_std.image_dropped.connect(self._on_preview_image_dropped)
-        
-        group_layout.addWidget(self.preview_label_std, 1)
-        
-        # Info Label (file info)
-        self.preview_info_label_std = QLabel("")
-        self.preview_info_label_std.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_info_label_std.setStyleSheet("color: #e0e0e0; font-size: 9pt;")
-        self.preview_info_label_std.hide()
-        group_layout.addWidget(self.preview_info_label_std, 0)
-        
-        # Stats Row (below preview)
-        stats_container = self._build_stats_row()
-        group_layout.addWidget(stats_container, 0)
-        
-        group_box.setLayout(group_layout)
-        return group_box
-    
-    def _build_stats_row(self):
-        """Build stats display row"""
-        container = QWidget()
-        container.setStyleSheet("""
-            QWidget {
-                background-color: #1e1e1e;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 4px;
-            }
-        """)
-        
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
-        
-        # Image Size Stat
-        self.stat_image_size = self._create_stat_item("Image Size:", "No Image", "#e0e0e0")
-        layout.addWidget(self.stat_image_size)
-        
-        # Max Capacity Stat
-        self.stat_capacity = self._create_stat_item("Max Capacity:", "0 KB", "#e0e0e0")
-        layout.addWidget(self.stat_capacity)
-        
-        # Payload Size Stat
-        self.stat_payload = self._create_stat_item("Payload Size:", "0 KB", "#e0e0e0")
-        layout.addWidget(self.stat_payload)
-        
-        return container
-    
-    def _create_stat_item(self, label_text, value_text, color):
-        """Create a single stat item"""
-        widget = QWidget()
-        widget.setStyleSheet("background: transparent; border: none;")
-        
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        
-        # Label
-        label = QLabel(label_text)
-        label.setStyleSheet("color: #888; font-size: 9pt; background: transparent; border: none;")
-        
-        # Value
-        value = QLabel(value_text)
-        value.setObjectName(f"stat_value_{label_text.replace(':', '').replace(' ', '_').lower()}")
-        value.setStyleSheet(f"color: {color}; font-size: 9pt; background: transparent; border: none;")
-        
-        layout.addWidget(label)
-        layout.addWidget(value)
-        layout.addStretch()
-        
-        # Store reference to value label
-        widget.value_label = value
-        
-        return widget
-    
-    def _update_stats(self, image_path=None, payload_size=0):
-        """Update stats display with current data"""
-        if image_path and os.path.exists(image_path):
-            try:
-                with Image.open(image_path) as img:
-                    width, height = img.size
-                    
-                    # Get file size
-                    file_size = os.path.getsize(image_path)
-                    file_size_str = format_file_size(file_size)
-                    
-                    # Update Image Size (with dimensions and file size)
-                    self.stat_image_size.value_label.setText(f"{width}×{height} ({file_size_str})")
-                    
-                    # Calculate and update Max Capacity
-                    capacity_bytes = (width * height * 3) // 8
-                    capacity_str = format_file_size(capacity_bytes)
-                    self.stat_capacity.value_label.setText(capacity_str)
-                    
-                    # Update Payload Size with color coding
-                    payload_str = format_file_size(payload_size)
-                    self.stat_payload.value_label.setText(payload_str)
-                    
-                    # Color code payload based on capacity
-                    if payload_size > capacity_bytes:
-                        self.stat_payload.value_label.setStyleSheet(
-                            "color: #f44336; font-weight: bold; font-size: 9pt; background: transparent; border: none;"
-                        )
-                    elif payload_size > 0:
-                        self.stat_payload.value_label.setStyleSheet(
-                            "color: #4caf50; font-size: 9pt; background: transparent; border: none;"
-                        )
-                    else:
-                        self.stat_payload.value_label.setStyleSheet(
-                            "color: #e0e0e0; font-size: 9pt; background: transparent; border: none;"
-                        )
-                        
-            except Exception as e:
-                self.stat_image_size.value_label.setText("Error")
-                self.stat_capacity.value_label.setText("N/A")
-        else:
-            self.stat_image_size.value_label.setText("No Image")
-            self.stat_capacity.value_label.setText("0 KB")
-            self.stat_payload.value_label.setText(format_file_size(payload_size))
-    
-    def _on_payload_changed(self):
-        """Update stats when payload changes"""
-        if hasattr(self, 'stat_image_size') and self.current_image_path:
-            payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-            self._update_stats(self.current_image_path, payload_size)
-    
-    def _update_file_metadata_label(self, file_path):
-        """Update file info label with filename only"""
-        try:
-            filename = os.path.basename(file_path)
-            # Show only filename (size is now in stats)
-            info_text = filename
-            
-            self.preview_info_label_std.setText(info_text)
-            self.preview_info_label_std.show()
-        except OSError:
-            self.preview_info_label_std.hide()
-    
-    def _on_preview_image_dropped(self, file_path):
-        """Handle image dropped on preview area"""
-        try:
-            # Validate file exists
-            if not os.path.exists(file_path):
-                QMessageBox.warning(self, "Error", "File not found!")
-                return
-            
-            # Validate PNG file
-            if not file_path.lower().endswith('.png'):
-                QMessageBox.warning(self, "Error", "Only PNG files are supported!")
-                return
-            
-            # Same logic as browse_single_image()
-            self.current_image_path = file_path
-            self.carrier_edit.setText(file_path)
-            self._load_image_preview(file_path)
-            
-            # Update stats if they exist
-            if hasattr(self, 'stat_image_size'):
-                payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-                self._update_stats(file_path, payload_size)
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
-    
-    # ========================================================================
-    # FILE BROWSING (CONTINUED)
-    # ========================================================================
-
-    def browse_metadata_carrier(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Carrier File", "", "Images & Audio (*.png *.jpg *.jpeg *.mp3)"
-        )
-        if file_path:
-            self.current_image_path = file_path
-            self.carrier_edit.setText(file_path)
-            self._load_preview_generic_left(file_path)
-            self.update_payload_ui_for_metadata(file_path)
-            self.read_metadata_and_fill(file_path)
-
-    def browse_locomotive_files_replace(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Select Multiple PNG Carriers", "", "PNG Images (*.png)"
-        )
-        if files:
-            self.locomotive_files = files
-            self._update_locomotive_ui_state()
-            self._update_locomotive_list()
-
-    def browse_locomotive_files_append(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Add PNG Carriers", "", "PNG Images (*.png)"
-        )
-        if files:
-            new_files = [f for f in files if f not in self.locomotive_files]
-            if new_files:
-                self.locomotive_files.extend(new_files)
-                self._update_locomotive_ui_state()
-                self._update_locomotive_list()
-
-    def browse_payload_file(self):
-        current_tech = self.tech_combo.currentText()
-        is_locomotive = "Locomotive" in current_tech
-
-        if is_locomotive:
-            file_filter = "All Files (*)"
-            caption = "Select Secret File (Any Type)"
-        else:
-            file_filter = "Text Files (*.txt)"
-            caption = "Select Secret Text File"
-
-        file_path, _ = QFileDialog.getOpenFileName(self, caption, "", file_filter)
-        
-        if file_path:
-            if hasattr(self, 'attachment_widget'):
-                self.attachment_widget.set_file(file_path)
-            
-            self.payload_file_path.setText(file_path)
-            
-            if not is_locomotive and file_path.lower().endswith(".txt"):
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    self.payload_text.setPlainText(content)
-                    self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-                    self.update_capacity_indicator()
-                except Exception as e:
-                    print(f"Error reading text file: {e}")
-
-    def _on_file_selected(self, file_path):
-        self.payload_file_path.setText(file_path)
-        
-        current_tech = self.tech_combo.currentText()
-        is_locomotive = "Locomotive" in current_tech
-        
-        if not is_locomotive and file_path.lower().endswith(".txt"):
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                self.payload_text.setPlainText(content)
-                self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-                self.update_capacity_indicator()
-            except Exception as e:
-                print(f"Error reading text file: {e}")
-
-    def _on_public_key_selected(self, file_path):
-        """Handler for when a public-key file is selected in the attachment widget."""
-        self.public_key_edit.setText(file_path)
-
-    def browse_public_key(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Public Key", "", "PEM Files (*.pem);;All Files (*)"
-        )
-        if file_path:
-            # Update both the read-only path field and the attachment widget
-            self.public_key_edit.setText(file_path)
-            if hasattr(self, 'pubkey_attachment'):
-                try:
-                    self.pubkey_attachment.set_file(file_path)
-                except Exception:
-                    pass
-
-    # ========================================================================
-    # LOCOMOTIVE MANAGEMENT
-    # ========================================================================
-
-    def delete_selected_locomotive_files(self):
-        current_list = self.loco_list_widget_std if self.right_panel_stack.currentIndex() == PAGE_LOCOMOTIVE else self.loco_list_widget_cfg
-        
-        if not current_list:
-            return
-            
-        selected_items = current_list.selectedItems()
-        for item in selected_items:
-            widget = current_list.itemWidget(item)
-            if widget and hasattr(widget, 'file_path'):
-                if widget.file_path in self.locomotive_files:
-                    self.locomotive_files.remove(widget.file_path)
-            row = current_list.row(item)
-            current_list.takeItem(row)
-        
-        self._update_locomotive_list()
-        self._update_locomotive_ui_state()
-
-    def clear_locomotive_files(self):
-        self.locomotive_files = []
-        self.loco_list_widget_std.clear()
-        self.loco_list_widget_cfg.clear()
-        self._update_locomotive_ui_state()
-
-    def remove_specific_file(self, file_path):
-        """Remove a specific file from the locomotive list (called by Tile X button)."""
-        if file_path in self.locomotive_files:
-            self.locomotive_files.remove(file_path)
-            # Refresh list to remove the item visually
-            self._update_locomotive_list()
-            self._update_locomotive_ui_state()
-
-    def _update_locomotive_list(self):
-        self.loco_list_widget_std.clear()
-        self.loco_list_widget_cfg.clear()
-        
-        for file_path in self.locomotive_files:
-            self._add_locomotive_file(file_path)
-
-    def _add_locomotive_file(self, file_path):
-        # Create Tiles
-        tile_std = LocoFileTile(file_path)
-        tile_cfg = LocoFileTile(file_path)
-        
-        # Connect delete signals
-        tile_std.deleteRequested.connect(self.remove_specific_file)
-        tile_cfg.deleteRequested.connect(self.remove_specific_file)
-
-        # Add to Standalone List
-        item_std = QListWidgetItem(self.loco_list_widget_std)
-        item_std.setSizeHint(QSize(120, 150))
-        self.loco_list_widget_std.addItem(item_std)
-        self.loco_list_widget_std.setItemWidget(item_std, tile_std)
-        
-        # Add to Configurable List
-        item_cfg = QListWidgetItem(self.loco_list_widget_cfg)
-        item_cfg.setSizeHint(QSize(120, 150))
-        self.loco_list_widget_cfg.addItem(item_cfg)
-        self.loco_list_widget_cfg.setItemWidget(item_cfg, tile_cfg)
-
-    def _update_locomotive_ui_state(self):
-        count = len(self.locomotive_files)
-        if count > 0:
-            self.carrier_edit.setText(f"{count} files selected")
-        else:
-            self.carrier_edit.clear()
-            self.carrier_edit.setPlaceholderText("Select multiple PNG images...")
-        
-        if self.loco_group_box_std:
-            self.loco_group_box_std.setTitle(f"Selected Files ({count} fragments)")
-        if self.loco_group_box_cfg:
-            self.loco_group_box_cfg.setTitle(f"Selected Files ({count} fragments)")
-
-    # ========================================================================
-    # PREVIEW & METADATA
-    # ========================================================================
-
-    def _load_image_preview(self, image_path):
-        pixmap = QPixmap(image_path)
-        
-        if not pixmap.isNull():
-            # Store original pixmaps for responsive scaling
-            self.original_preview_pixmaps['std'] = pixmap
-            self.original_preview_pixmaps['cfg'] = pixmap
-            self._update_preview_scaling()
-            self._update_file_metadata_label(image_path)
-        else:
-            self.preview_label_std.setText("Failed to load image")
-            self.preview_label_cfg.setText("Failed to load image")
-            self.preview_info_label_std.hide()
-            self.preview_info_label_cfg.hide()
-            self.original_preview_pixmaps.pop('std', None)
-            self.original_preview_pixmaps.pop('cfg', None)
-
-    def _update_preview_scaling(self):
-        """Update all preview labels with proper scaling based on current size."""
-        if 'std' in self.original_preview_pixmaps and self.preview_label_std:
-            pixmap = self.original_preview_pixmaps['std']
-            label_width = self.preview_label_std.width()
-            if label_width <= 0:
-                label_width = 300
-            max_height = min(300, int(self.height() * 0.4))
-            if max_height < 150:
-                max_height = 150
-            
-            scaled_pixmap = pixmap.scaled(
-                label_width, max_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.preview_label_std.setPixmap(scaled_pixmap)
-            self.preview_label_std.setText("")
-            self.preview_label_std.setStyleSheet("border: 2px solid #3daee9; background-color: #222;")
-        
-        if 'cfg' in self.original_preview_pixmaps and self.preview_label_cfg:
-            pixmap = self.original_preview_pixmaps['cfg']
-            label_width = self.preview_label_cfg.width()
-            if label_width <= 0:
-                label_width = 200
-            max_height = min(200, int(self.height() * 0.3))
-            if max_height < 100:
-                max_height = 100
-            
-            scaled_pixmap = pixmap.scaled(
-                label_width, max_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.preview_label_cfg.setPixmap(scaled_pixmap)
-            self.preview_label_cfg.setText("")
-            self.preview_label_cfg.setStyleSheet("border: 2px solid #3daee9; background-color: #222;")
-        
-        if 'meta_left' in self.original_preview_pixmaps and self.preview_label_meta_left:
-            pixmap = self.original_preview_pixmaps['meta_left']
-            label_width = self.preview_label_meta_left.width()
-            if label_width <= 0:
-                label_width = 250
-            max_height = min(250, int(self.height() * 0.35))
-            if max_height < 120:
-                max_height = 120
-            
-            scaled_pixmap = pixmap.scaled(
-                label_width, max_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.preview_label_meta_left.setPixmap(scaled_pixmap)
-            self.preview_label_meta_left.setText("")
-            self.preview_label_meta_left.setStyleSheet("border: 2px dashed #3daee9; background-color: #222;")
-
-    def _set_preview_pixmap(self, label, pixmap, max_height):
-        """Legacy method for backward compatibility."""
-        scaled_pixmap = pixmap.scaled(
-            label.width() if label.width() > 0 else 300, max_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        label.setPixmap(scaled_pixmap)
-        label.setText("")
-        label.setStyleSheet("border: 2px solid #3daee9; background-color: #222;")
-    
-    def resizeEvent(self, a0):
-        """Handle resize events to update preview scaling."""
-        super().resizeEvent(a0)
-        if self.original_preview_pixmaps:
-            self._update_preview_scaling()
-
-    def _load_preview_generic_left(self, file_path):
-        ext = os.path.splitext(file_path)[1].lower()
-        
-        if ext in ['.png', '.jpg', '.jpeg']:
-            pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                self.original_preview_pixmaps['meta_left'] = pixmap
-                self._update_preview_scaling()
-            else:
-                self._set_preview_error(self.preview_label_meta_left, "Failed to load image")
-                self.original_preview_pixmaps.pop('meta_left', None)
-        elif ext == '.mp3':
-            self.preview_label_meta_left.setPixmap(QPixmap())
-            self.preview_label_meta_left.setText("🎵 Audio File")
-            self.preview_label_meta_left.setStyleSheet(
-                "border: 2px dashed #3daee9; background-color: #222; "
-                "color: #3daee9; font-size: 24px; font-weight: bold;"
-            )
-            self.original_preview_pixmaps.pop('meta_left', None)
-        else:
-            self._set_preview_error(self.preview_label_meta_left, "Unsupported File Type")
-            self.original_preview_pixmaps.pop('meta_left', None)
-        
-        self._update_file_metadata_label_left(file_path)
-
-    def _set_preview_error(self, label, message):
-        label.setText(message)
-        label.setStyleSheet(
-            "border: 2px dashed #555; background-color: #222; "
-            "color: #ff5555; font-size: 14px;"
-        )
-
-    def _update_file_metadata_label(self, file_path):
-        try:
-            size_bytes = os.path.getsize(file_path)
-            size_str = format_file_size(size_bytes)
-            filename = os.path.basename(file_path)
-            info_text = filename
-            
-            self.preview_info_label_std.setText(info_text)
-            self.preview_info_label_std.show()
-            
-            self.preview_info_label_cfg.setText(info_text)
-            self.preview_info_label_cfg.show()
-        except OSError:
-            self.preview_info_label_std.hide()
-            self.preview_info_label_cfg.hide()
-
-    def _update_file_metadata_label_left(self, file_path):
-        try:
-            size_bytes = os.path.getsize(file_path)
-            size_str = format_file_size(size_bytes)
-            filename = os.path.basename(file_path)
-            
-            if len(filename) > 20:
-                filename = filename[:17] + "..."
-            
-            info_text = f"{filename}\nSize: {size_str}"
-            
-            self.preview_info_label_meta_left.setText(info_text)
-            self.preview_info_label_meta_left.show()
-        except OSError:
-            self.preview_info_label_meta_left.hide()
-
-    def update_payload_ui_for_metadata(self, file_path):
-        ext = os.path.splitext(file_path)[1].lower()
-        self.meta_fields = {}
-        
-        self._clear_metadata_forms()
-        
-        is_configurable = self.mode_combo.currentText() == "Configurable Model"
-        container = self.meta_container_cfg if is_configurable else self.meta_container_std
-        
-        if container.layout() is None:
-            layout = QVBoxLayout(container)
-            layout.setContentsMargins(0, 0, 0, 0)
-        else:
-            while container.layout().count():
-                item = container.layout().takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-        
-        meta_tabs = QTabWidget()
-        
-        def create_scrollable_form(fields_dict, hint_map=None):
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setMinimumHeight(200)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            
-            content = QWidget()
-            form = QFormLayout(content)
-            form.setContentsMargins(4, 4, 4, 4)
-            form.setSpacing(8)
-            
-            for label_txt, widget_type in fields_dict.items():
-                if widget_type == 'line':
-                    inp = QLineEdit()
-                elif widget_type == 'text':
-                    inp = QTextEdit()
-                    inp.setMinimumHeight(50)
-                    inp.setMaximumHeight(80)
-                elif widget_type == 'combo_stars':
-                    inp = QComboBox()
-                    inp.addItems(["0 Stars", "1 Star", "2 Stars", "3 Stars", "4 Stars", "5 Stars"])
-                
-                if hint_map and label_txt in hint_map:
-                    if isinstance(inp, (QLineEdit, QTextEdit)):
-                        inp.setPlaceholderText(hint_map[label_txt])
-                
-                self.meta_fields[label_txt] = inp
-                form.addRow(f"{label_txt}:", inp)
-            
-            scroll.setWidget(content)
-            return scroll
-
-        if ext == '.png':
-            fields_gen = {
-                "Title": 'line', "Author": 'line', "Description": 'line',
-                "Copyright": 'line', "Creation Time": 'line', 
-                "Software": 'line', "Source": 'line', "Comment": 'text'
-            }
-            fields_hidden = {
-                "Custom Keyword": 'line', "Value/Data": 'text'
-            }
-            hints = {"Custom Keyword": "e.g., RawData, SystemLog"}
-            
-            meta_tabs.addTab(create_scrollable_form(fields_gen), "General Info")
-            meta_tabs.addTab(create_scrollable_form(fields_hidden, hints), "Hidden Info")
-
-        elif ext in ['.jpg', '.jpeg']:
-            fields_gen = {
-                "Title": 'line', "Subject": 'line', "Rating": 'combo_stars', 
-                "Tags": 'line', "Comments": 'text', "Authors": 'line', 
-                "Date Taken": 'line', "Copyright": 'line', "Program Name": 'line',
-                "Camera Maker": 'line', "Camera Model": 'line', "ISO Speed": 'line',
-                "F-stop": 'line', "Exposure Time": 'line', "Focal Length": 'line'
-            }
-            fields_hidden = {"COM Marker": 'text'}
-            hints = {"COM Marker": "Invisible to most viewers"}
-            
-            meta_tabs.addTab(create_scrollable_form(fields_gen), "General Info")
-            meta_tabs.addTab(create_scrollable_form(fields_hidden, hints), "Hidden Info")
-
-        elif ext == '.mp3':
-            fields_gen = {
-                "Title (TIT2)": 'line', "Subtitle (TIT3)": 'line', "Rating (POPM)": 'combo_stars',
-                "Comments (COMM)": 'text', "Contributing Artists (TPE1)": 'line', 
-                "Album Artist (TPE2)": 'line', "Album (TALB)": 'line', "Year (TYER)": 'line',
-                "Track Number (TRCK)": 'line', "Genre (TCON)": 'line', "Publisher (TPUB)": 'line',
-                "Composers (TCOM)": 'line', "Conductors (TPE3)": 'line', "Mood (TMOO)": 'line',
-                "BPM (TBPM)": 'line', "Copyright (TCOP)": 'line', "URL (WXXX)": 'line'
-            }
-            fields_hidden = {
-                "PRIV (Private Frame)": 'text', "TXXX (User Defined Text)": 'text'
-            }
-            hints = {
-                "PRIV (Private Frame)": "Best for hiding data, Windows ignores this",
-                "TXXX (User Defined Text)": "Hidden unless Key matches known standard"
-            }
-            
-            meta_tabs.addTab(create_scrollable_form(fields_gen), "General Info")
-            meta_tabs.addTab(create_scrollable_form(fields_hidden, hints), "Hidden Info")
-
-        container.layout().addWidget(meta_tabs)
-
-    def read_metadata_and_fill(self, file_path):
-        if not file_path:
-            return
-            
-        ext = os.path.splitext(file_path)[1].lower()
-
-        def set_val(field_name, value):
-            if field_name in self.meta_fields and value:
-                widget = self.meta_fields[field_name]
-                val_str = str(value).strip()
-                if isinstance(widget, (QLineEdit, QTextEdit)):
-                    widget.setText(val_str)
-
-        if ext == '.png' and Image:
-            try:
-                with Image.open(file_path) as img:
-                    info = img.info or {}
-                    for key in ["Title", "Author", "Description", "Copyright", 
-                               "Creation Time", "Software", "Source", "Comment"]:
-                        set_val(key, info.get(key))
-            except Exception as e:
-                print(f"Error reading PNG metadata: {e}")
-
-        elif ext in ['.jpg', '.jpeg'] and Image and ExifTags:
-            try:
-                with Image.open(file_path) as img:
-                    exif_data = img._getexif()
-                    if exif_data:
-                        exif = {
-                            ExifTags.TAGS.get(k, k): v
-                            for k, v in exif_data.items()
-                            if k in ExifTags.TAGS
-                        }
-                        
-                        set_val("Camera Maker", exif.get("Make"))
-                        set_val("Camera Model", exif.get("Model"))
-                        set_val("Program Name", exif.get("Software"))
-                        set_val("Date Taken", exif.get("DateTimeOriginal") or exif.get("DateTime"))
-                        set_val("Copyright", exif.get("Copyright"))
-                        set_val("ISO Speed", exif.get("ISOSpeedRatings"))
-                        set_val("F-stop", exif.get("FNumber"))
-                        set_val("Exposure Time", exif.get("ExposureTime"))
-                        set_val("Focal Length", exif.get("FocalLength"))
-            except Exception as e:
-                print(f"Error reading JPEG metadata: {e}")
-
-        elif ext == '.mp3' and mutagen:
-            try:
-                audio = MP3(file_path, ID3=ID3)
-                if audio.tags:
-                    tags = audio.tags
-                    
-                    def get_id3_text(frame_id):
-                        if frame_id in tags:
-                            return tags[frame_id].text[0]
-                        return ""
-
-                    set_val("Title (TIT2)", get_id3_text("TIT2"))
-                    set_val("Subtitle (TIT3)", get_id3_text("TIT3"))
-                    set_val("Contributing Artists (TPE1)", get_id3_text("TPE1"))
-                    set_val("Album Artist (TPE2)", get_id3_text("TPE2"))
-                    set_val("Album (TALB)", get_id3_text("TALB"))
-                    set_val("Year (TYER)", get_id3_text("TYER"))
-                    set_val("Track Number (TRCK)", get_id3_text("TRCK"))
-                    set_val("Genre (TCON)", get_id3_text("TCON"))
-                    set_val("Publisher (TPUB)", get_id3_text("TPUB"))
-                    set_val("Composers (TCOM)", get_id3_text("TCOM"))
-                    set_val("Conductors (TPE3)", get_id3_text("TPE3"))
-                    set_val("Mood (TMOO)", get_id3_text("TMOO"))
-                    set_val("BPM (TBPM)", get_id3_text("TBPM"))
-                    set_val("Copyright (TCOP)", get_id3_text("TCOP"))
-            except Exception as e:
-                print(f"Error reading MP3 metadata: {e}")
-
-    # ========================================================================
-    # CAPACITY & TEXT EDITOR
-    # ========================================================================
-
-    def update_capacity_indicator(self):
-        text = self.payload_text.toPlainText()
-        count = len(text)
-        max_cap = 100
-        
-        self.lbl_capacity.setText(f"capacity: {count}/{max_cap}")
-        
-        if count > max_cap:
-            self.lbl_capacity.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 8pt;")
-        else:
-            self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
-
-    def open_text_editor(self):
-        current_text = self.payload_text.toPlainText()
-        dialog = TextEditorDialog(current_text, self)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.payload_text.setPlainText(dialog.get_text())
-
-    # ========================================================================
-    # UI BUILDERS
-    # ========================================================================
-
-    def _build_execution_group(self, button_text):
-        container = QWidget()
-        container.setMinimumHeight(100)
-        container.setMaximumHeight(130)
-        
-        # 1. Main Layout เป็นแนวตั้ง (Vertical)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
-
-        # สร้างปุ่ม 1
-        self.btn_exec = QPushButton(button_text)
-        self.btn_exec.setMinimumHeight(45)
-        self.btn_exec.setStyleSheet(
-            "font-weight: bold; font-size: 11pt; "
-            "background-color: #2d5a75; border-radius: 4px; color: white;"
-        )
-        
-        # สร้างปุ่ม 2
-        self.btn_save_stego = QPushButton('Save Stego')
-        self.btn_save_stego.setMinimumHeight(45)
-        self.btn_save_stego.setStyleSheet(
-            "font-weight: bold; font-size: 11pt; "
-            "background-color: #888; border-radius: 4px; color: white;"
-        )
-        
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        
-        self.status_label = QLabel("Ready.")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setStyleSheet("color: #888; font-size: 9pt;")
-
-        self.btn_exec.clicked.connect(
-            lambda: self._on_run_embed()
-        )
-        
-        # 2. สร้าง Layout แนวนอนสำหรับปุ่ม
-        hlayout = QHBoxLayout() 
-        hlayout.setSpacing(10)
-        hlayout.addWidget(self.btn_exec)
-        hlayout.addWidget(self.btn_save_stego)
-
-        # 3. ยัด Layout ปุ่ม ลงใน Layout หลัก
-        layout.addLayout(hlayout)
-        layout.addWidget(self.progress_bar)
-        layout.addWidget(self.status_label)
-        
-        return container
-    
-    def _update_progress_bar(self, button, progress_bar, status_label, step):
-        self.step = step
-        if self.step == 20:
-            self.status_label.setText("Encrypting payload...")
-        elif self.step == 50:
-            self.status_label.setText("Processing carrier(s)...")
-        elif self.step == 80:
-            self.status_label.setText("Embedding data...")
-        elif self.step >= 100:
-            self.status_label.setText("Completed Successfully!")
-            button.setEnabled(True)
-        
-    def _start_execution_animation(self, button, progress_bar, status_label):
-        button.setEnabled(False)
-        progress_bar.setValue(0)
-        status_label.setText("Initializing...") 
-        self.step = 0
-
-
+    # Components(Groupbox) of left panel
     def _build_mode_section(self):
         return self._create_combo_group("Mode Selection", [
             (
@@ -1571,33 +461,36 @@ class EmbedTab(QWidget):
                 combo.setItemData(current_index, hint, Qt.ItemDataRole.ToolTipRole)
             
         setattr(self, attribute_name, combo)
-        # Connect to appropriate handler based on attribute name
-        if attribute_name == "mode_combo":
-            combo.currentIndexChanged.connect(self.on_mode_changed)
-        else:
-            combo.currentIndexChanged.connect(self.on_technique_changed)
+        combo.currentIndexChanged.connect(self.on_technique_changed)
+        
         layout.addWidget(combo)
         box.setLayout(layout)
         return box
-
+        
     def _build_carrier_section(self):
-        box = QGroupBox("Carrier Input")
-        box.setMinimumHeight(75)
-        box.setMaximumHeight(90)
-        layout = QGridLayout()
-        layout.setContentsMargins(6, 12, 6, 6)
-        layout.setSpacing(6)
-        self.carrier_edit = QLineEdit()
-        self.carrier_edit.setReadOnly(True)
-        self.carrier_edit.setPlaceholderText("Select PNG Image...")
-        self.carrier_browse_btn = QPushButton("Browse")
-        layout.addWidget(self.carrier_edit, 0, 0)
-        layout.addWidget(self.carrier_browse_btn, 0, 1)
-        box.setLayout(layout)
-        return box
-
+            box = QGroupBox("Carrier Input")
+            box.setMinimumHeight(75)
+            box.setMaximumHeight(90)
+            
+            layout = QHBoxLayout() 
+            layout.setContentsMargins(6, 12, 6, 6)
+            layout.setSpacing(6)
+            
+            self.carrier_edit = QLineEdit()
+            self.carrier_edit.setReadOnly(True)
+            self.carrier_edit.setPlaceholderText("Select PNG Image...")
+            
+            self.carrier_browse_btn = QPushButton("Browse")
+            
+            layout.addWidget(self.carrier_edit)
+            layout.addWidget(self.carrier_browse_btn)
+            
+            box.setLayout(layout)
+            return box
+    
     def _build_payload_section(self):
         box = QGroupBox("Payload Input")
+        self.payload_main_group = box
         box.setMinimumHeight(200)
         layout = QVBoxLayout()
         layout.setContentsMargins(6, 12, 6, 6)
@@ -1605,9 +498,8 @@ class EmbedTab(QWidget):
         
         self.payload_stack = QStackedWidget()
         self.payload_stack.addWidget(self._create_standard_payload_page())
-        self.payload_stack.addWidget(self._create_metadata_payload_page())
+        # self.payload_stack.addWidget(self._create_metadata_payload_page())
         
-        # Set size policy to allow expansion but prevent excessive growth
         size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         size_policy.setVerticalStretch(1)
         self.payload_stack.setSizePolicy(size_policy)
@@ -1615,7 +507,7 @@ class EmbedTab(QWidget):
         layout.addWidget(self.payload_stack, 1)
         box.setLayout(layout)
         return box
-
+    
     def _create_standard_payload_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1627,82 +519,45 @@ class EmbedTab(QWidget):
         
         layout.addWidget(self.payload_tabs)
         return page
-
-    def _create_metadata_payload_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-        
-        preview_group = QGroupBox("Carrier Preview")
-        preview_group.setStyleSheet("QGroupBox { font-weight: bold; color: #3daee9; }")
-        group_layout = QVBoxLayout()
-        group_layout.setContentsMargins(6, 12, 6, 6)
-        group_layout.setSpacing(4)
-        
-        self.preview_label_meta_left = QLabel()
-        self.preview_label_meta_left.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label_meta_left.setText("Preview Area\n(No File Selected)")
-        self.preview_label_meta_left.setStyleSheet(
-            "border: 2px dashed #555; background-color: #222; "
-            "color: #888; font-size: 14px;"
-        )
-        self.preview_label_meta_left.setMinimumHeight(200)
-        self.preview_label_meta_left.setScaledContents(False)
-        group_layout.addWidget(self.preview_label_meta_left, 1)
-        
-        preview_group.setLayout(group_layout)
-        layout.addWidget(preview_group, 1)
-        
-        self.preview_info_label_meta_left = QLabel("")
-        self.preview_info_label_meta_left.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_info_label_meta_left.setStyleSheet(
-            "color: #3daee9; font-weight: bold; font-size: 10pt; background-color: #1a1a1a; "
-            "border: 1px solid #444; border-radius: 4px; padding: 6px;"
-        )
-        self.preview_info_label_meta_left.setWordWrap(True)
-        self.preview_info_label_meta_left.hide()
-        layout.addWidget(self.preview_info_label_meta_left, 0)
-        
-        return page
-
+    
     def _create_text_payload_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(4)
+            
+            self.payload_text = QTextEdit()
+            self.payload_text.setPlaceholderText("Enter secret message here...")
+            
+            # toolbar: text editor & capacity text
+            toolbar = QHBoxLayout()
+            toolbar.setSpacing(4)
+            btn_editor = QPushButton("Text Editor")
+            btn_editor.setMinimumSize(100, 25)
+            btn_editor.setStyleSheet("font-size: 8pt; padding: 2px;")
+            btn_editor.clicked.connect(self.open_text_editor)
+            
+            self.lbl_capacity = QLabel("Size: 0 B")
+            self.lbl_capacity.setAlignment(Qt.AlignmentFlag.AlignRight)
+            self.lbl_capacity.setStyleSheet("color: #aaa;  font-size: 8pt;")
+            
+            toolbar.addWidget(btn_editor)
+            toolbar.addStretch()
+            toolbar.addWidget(self.lbl_capacity)
         
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(4)
-        btn_editor = QPushButton("Text Editor")
-        btn_editor.setMinimumSize(100, 25)
-        btn_editor.setStyleSheet("font-size: 8pt; padding: 2px;")
-        btn_editor.clicked.connect(self.open_text_editor)
-        
-        self.lbl_capacity = QLabel("capacity: 0/100")
-        self.lbl_capacity.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
-        
-        toolbar.addWidget(btn_editor)
-        toolbar.addStretch()
-        toolbar.addWidget(self.lbl_capacity)
-        
-        self.payload_text = QTextEdit()
-        self.payload_text.setPlaceholderText("Enter secret message here...")
-        
-        layout.addWidget(self.payload_text, 1)
-        layout.addLayout(toolbar, 0)
-        
-        self.payload_text.textChanged.connect(self.update_capacity_indicator)
-        # Also update stats when payload changes
-        self.payload_text.textChanged.connect(self._on_payload_changed)
-        
-        return tab
-
+            layout.addWidget(self.payload_text, 1)
+            layout.addLayout(toolbar, 0)
+            
+            self.payload_text.textChanged.connect(self.update_capacity_indicator)
+            
+            # self.payload_text.textChanged.connect(self._on_payload_changed)
+            
+            return tab
+    
     def _create_file_payload_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(5, 10, 5, 10)  # Balanced top/bottom spacing
         layout.setSpacing(6)
         
         self.payload_file_path = QLineEdit()
@@ -1712,8 +567,7 @@ class EmbedTab(QWidget):
         self.attachment_widget = AttachmentDropWidget()
         self.attachment_widget.fileSelected.connect(self._on_file_selected)
         self.attachment_widget.fileCleared.connect(self.payload_file_path.clear)
-        # Let the parent handle the file dialog; connect widget signal
-        # to the EmbedTab handler which knows about technique filters.
+
         self.attachment_widget.requestBrowse.connect(self.browse_payload_file)
 
         # Default hint: prefer text-mode files for File Attachment techniques
@@ -1726,7 +580,157 @@ class EmbedTab(QWidget):
         layout.addWidget(self.payload_file_path, 0)
         
         return tab
+                    
+    # ========================================================================
+    # CAPACITY & TEXT EDITOR
+    # ========================================================================
+            
+    def update_capacity_indicator(self):
+        """คำนวณขนาดข้อความแบบ Real-time และอัปเดต UI"""
+        
+        # แปลงเป็น Bytes
+        text_bytes = self.payload_text.toPlainText().encode('utf-8')
+        current_size = len(text_bytes)
+        
+        max_cap = getattr(self, 'max_capacity_bytes', 0) 
+        
+        #จัดรูปแบบข้อความแสดงผล
+        # เช่น "Capacity: 1.5 KB / 2.0 MB"
+        if max_cap > 0:
+            cap_text = f"Capacity: {format_file_size(current_size)} / {format_file_size(max_cap)}"
+        else:
+            cap_text = f"Size: {format_file_size(current_size)}"
+            
+        self.lbl_capacity.setText(cap_text)
 
+        # เรียกฟังก์ชันกลางเพื่ออัปเดต Stats ฝั่งซ้ายด้วย
+        self._update_payload_size() 
+        
+        #เปลี่ยนสีแจ้งเตือน (แดงเมื่อเกิน, เทาเมื่อปกติ)
+        if max_cap > 0 and current_size > max_cap:
+            # สีแดง + ตัวหนา (Alert)
+            self.lbl_capacity.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 8pt;")
+        else:
+            # สีเทาปกติ
+            self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
+
+    def open_text_editor(self):
+        current_text = self.payload_text.toPlainText()
+        dialog = TextEditorDialog(current_text, self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.payload_text.setPlainText(dialog.get_text())
+            
+    # ========================================================================
+    # FILE SELECTION HANDLERS
+    # ========================================================================
+    
+    def _on_file_selected(self, file_path):
+        """Handle file selection from drag-drop (called by signal from AttachmentDropWidget)"""
+        # NOTE: This is ONLY called when user drags a file, NOT when browsing
+        
+        self.payload_file_path.setText(file_path)
+        
+        current_tech = self.tech_combo.currentText()
+        is_locomotive = "Locomotive" in current_tech
+        
+        # Extract text content for LSB++ mode
+        if not is_locomotive:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in TEXT_FILE_EXTENSIONS:
+                try:
+                    # Simple read with UTF-8
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    self.payload_text.setPlainText(content)
+                    self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
+                    self.update_capacity_indicator()
+                except UnicodeDecodeError:
+                    # Try other common encodings
+                    for encoding in ['utf-16', 'latin-1', 'cp1252']:
+                        try:
+                            with open(file_path, 'r', encoding=encoding) as f:
+                                content = f.read()
+                            self.payload_text.setPlainText(content)
+                            self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
+                            self.update_capacity_indicator()
+                            break
+                        except:
+                            continue
+                except Exception as e:
+                    print(f"Error reading file: {e}")
+
+    def _on_public_key_selected(self, file_path):
+        """Handler for when a public-key file is selected in the attachment widget."""
+        self.public_key_edit.setText(file_path)
+
+    def browse_public_key(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Public Key", "", "PEM Files (*.pem);;All Files (*)"
+        )
+        if file_path:
+            # Update both the read-only path field and the attachment widget
+            self.public_key_edit.setText(file_path)
+            if hasattr(self, 'pubkey_attachment'):
+                try:
+                    self.pubkey_attachment.set_file(file_path)
+                except Exception:
+                    pass
+    
+    def browse_payload_file(self):
+        current_tech = self.tech_combo.currentText()
+        is_locomotive = "Locomotive" in current_tech
+
+        if is_locomotive:
+            file_filter = "All Files (*)"
+            caption = "Select Secret File (Any Type)"
+        else:
+            # Expanded file filters for LSB++ mode
+            file_filter = (
+                "Text Files (*.txt *.md *.csv *.json *.xml *.log);;"
+                "Code Files (*.py *.js *.ts *.java *.cpp *.c *.h *.cs *.go *.rs);;"
+                "Config Files (*.yml *.yaml *.toml *.ini *.conf *.cfg *.env);;"
+                "Web Files (*.html *.css *.scss *.jsx *.tsx *.vue);;"
+                "Script Files (*.sql *.sh *.bat *.ps1);;"
+                "All Files (*)"
+            )
+            caption = "Select Secret Text File"
+
+        file_path, _ = QFileDialog.getOpenFileName(self, caption, "", file_filter)
+        
+        if file_path:
+            # Set file in attachment widget (this is the ONLY place we call set_file from browse)
+            if hasattr(self, 'attachment_widget'):
+                self.attachment_widget.set_file(file_path)
+            
+            self.payload_file_path.setText(file_path)
+            
+            # Extract text content for LSB++ mode
+            if not is_locomotive:
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in TEXT_FILE_EXTENSIONS:
+                    try:
+                        # Simple read with UTF-8
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        self.payload_text.setPlainText(content)
+                        self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
+                        self.update_capacity_indicator()
+                    except UnicodeDecodeError:
+                        # Try other common encodings
+                        for encoding in ['utf-16', 'latin-1', 'cp1252']:
+                            try:
+                                with open(file_path, 'r', encoding=encoding) as f:
+                                    content = f.read()
+                                self.payload_text.setPlainText(content)
+                                self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
+                                self.update_capacity_indicator()
+                                break
+                            except:
+                                continue
+                    except Exception as e:
+                        print(f"Error reading file: {e}")
+                        
     def _build_encryption_section(self):
         self.encryption_box = QGroupBox("Encryption Options")
         self.encryption_box.setCheckable(True)
@@ -1763,7 +767,10 @@ class EmbedTab(QWidget):
         self.encryption_box.toggled.connect(self.enc_stack.setEnabled)
         
         return self.encryption_box
-
+    
+    def _toggle_encryption_inputs(self):
+        self.enc_stack.setCurrentIndex(self.enc_combo.currentIndex())
+        
     def _create_password_page(self):
         page = QWidget()
         layout = QGridLayout(page)
@@ -1787,7 +794,55 @@ class EmbedTab(QWidget):
         layout.addWidget(self.confirmpassphrase, 1, 1)
         
         return page
+    
+    def _add_visibility_toggle(self, line_edit):
+        """Add eye icon toggle using programmatic drawing"""
+        
+        def create_eye_icon(is_open):
+            pixmap = QPixmap(24, 24)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # Setup Pen & Color
+            color = QColor("#888888")
+            pen = QPen(color, 2)
+            painter.setPen(pen)
+            
+            if is_open:
+                # Draw Open Eye (Oval + Pupil)
+                painter.drawEllipse(2, 6, 20, 12) # Outer eye
+                painter.setBrush(color)           # Fill pupil
+                painter.drawEllipse(10, 10, 4, 4) # Pupil
+            else:
+                # Draw Closed Eye (Oval + Slash)
+                painter.drawEllipse(2, 6, 20, 12) # Outer eye
+                # Draw slash line
+                painter.drawLine(4, 4, 20, 20)
+                
+            painter.end()
+            return QIcon(pixmap)
 
+        icon_visible = create_eye_icon(True)
+        icon_hidden = create_eye_icon(False)
+
+        # Default state: Password hidden -> Show "Hidden" icon (Closed Eye)
+        action = line_edit.addAction(icon_hidden, QLineEdit.ActionPosition.TrailingPosition)
+        
+        def toggle():
+            is_password = line_edit.echoMode() == QLineEdit.EchoMode.Password
+            if is_password:
+                # Show Text -> Show "Open Eye"
+                line_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+                action.setIcon(icon_visible)
+            else:
+                # Hide Text -> Show "Closed Eye"
+                line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+                action.setIcon(icon_hidden)
+                
+        action.triggered.connect(toggle)
+    
     def _create_public_key_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)  # เปลี่ยนเป็น QVBoxLayout เพื่อจัดวางง่ายขึ้น
@@ -1813,249 +868,266 @@ class EmbedTab(QWidget):
         layout.addWidget(self.pubkey_attachment)
 
         return page
-
-    def _add_visibility_toggle(self, line_edit):
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton)
-        action = line_edit.addAction(icon, QLineEdit.ActionPosition.TrailingPosition)
         
-        def toggle():
-            is_password = line_edit.echoMode() == QLineEdit.EchoMode.Password
-            line_edit.setEchoMode(
-                QLineEdit.EchoMode.Normal if is_password else QLineEdit.EchoMode.Password
-            )
-        action.triggered.connect(toggle)
-
-    def _toggle_encryption_inputs(self):
-        self.enc_stack.setCurrentIndex(self.enc_combo.currentIndex())
-
-    def _build_guide_section(self):
-        box = QGroupBox("GuideNote")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(6, 12, 6, 6)
-        layout.setSpacing(4)
+    def _create_right_panel(self):
+        stack = QStackedWidget()
+        stack.addWidget(self._create_standalone_page())
+        # stack.addWidget(self._create_locomotive_page())
+        # stack.addWidget(self._create_configurable_page())
+        return stack
+    
+    # Components(Groupbox) of right panel
+    def _create_standalone_page(self):
+        page = QWidget()
+        page.setMinimumSize(400, 400)
         
-        info = QTextEdit()
-        info.setPlaceholderText("Enter Guide Message here...")
-        info.setStyleSheet("color: #aaa;")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
         
-        layout.addWidget(info, 1)
-        box.setLayout(layout)
-        return box
-
-    def _build_preview_section(self, mode):
-        container = QWidget()
-        outer_layout = QVBoxLayout(container)
-        outer_layout.setContentsMargins(4, 4, 4, 4)
-        outer_layout.setSpacing(4)
-
-        preview_group = QGroupBox("Preview")
+        # Wrap content stack in scroll area to prevent overflow
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
+        
+        self.standalone_content_stack = QStackedWidget()
+        self.standalone_content_stack.addWidget(self._build_preview_section_with_stats())
+        # self.standalone_content_stack.addWidget(self._create_metadata_editor_container("std"))
+        
+        content_layout.addWidget(self.standalone_content_stack, 1)
+        scroll_area.setWidget(content_widget)
+        
+        layout.addWidget(scroll_area, 1)
+        layout.addWidget(self._build_execution_group("Embed Data"), 0)
+        return page
+    
+    def _build_preview_section_with_stats(self):
+        """Preview section with stats display (for LSB++ mode)"""
+        group_box = QGroupBox("Preview")
         group_layout = QVBoxLayout()
         group_layout.setContentsMargins(6, 12, 6, 6)
-        group_layout.setSpacing(4)
+        group_layout.setSpacing(6)
         
-        preview_label = QLabel()
-        preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview_label.setText("Image Preview\n(No Image Selected)")
-        preview_label.setStyleSheet(
-            "border: 2px dashed #555; background-color: #222; "
-            "color: #888; font-size: 14px;"
-        )
-        preview_label.setMinimumHeight(150 if mode == "std" else 120)
-        preview_label.setScaledContents(False)
-        group_layout.addWidget(preview_label, 1)
-        preview_group.setLayout(group_layout)
+        # Preview Label with drag-and-drop support
+        self.preview_label = DraggablePreviewLabel()
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setText("No Image Selected\n\nSelect PNG image  from left panel\nor drag & drop PNG file here")
+        self.preview_label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #555;
+                background-color: #222;
+                color: #888;
+                font-size: 10pt;
+            }
+        """)
+        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setScaledContents(False)
         
-        outer_layout.addWidget(preview_group, 1)
-
+        
+        self.preview_label.image_dropped.connect(self._on_preview_image_dropped)
+        
+        group_layout.addWidget(self.preview_label, 1)
+        
+        # Info Label (file info)
         preview_info_label = QLabel("")
         preview_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview_info_label.setStyleSheet("color: #3daee9; font-weight: bold; font-size: 9pt;")
+        preview_info_label.setStyleSheet("color: #e0e0e0; font-size: 9pt;")
         preview_info_label.hide()
+        setattr(self, f"preview_info_label", preview_info_label)
         
-        outer_layout.addWidget(preview_info_label, 0)
+        group_layout.addWidget(preview_info_label, 0)
         
-        if mode == "std":
-            self.preview_label_std = preview_label
-            self.preview_info_label_std = preview_info_label
-        else:
-            self.preview_label_cfg = preview_label
-            self.preview_info_label_cfg = preview_info_label
+        # Stats Row (below preview)
+        stats_container = self._build_stats_row()
+        group_layout.addWidget(stats_container, 0)
+        
+        group_box.setLayout(group_layout)
+        return group_box
+    
+    def _build_stats_row(self):
+        """Build stats display row"""
+        container = QWidget()
+        container.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 4px;
+            }
+        """)
+        
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+        
+        
+        # File Name Stat
+        self.stat_filename = self._create_stat_item("File:", "None", "#e0e0e0")
+        layout.addWidget(self.stat_filename)
+        
+        # Image Size Stat
+        self.stat_image_size = self._create_stat_item("Image Size:", "No Image", "#e0e0e0")
+        layout.addWidget(self.stat_image_size)
+        
+        # Max Capacity Stat
+        self.stat_capacity = self._create_stat_item("Max Capacity:", "0 KB", "#e0e0e0")
+        layout.addWidget(self.stat_capacity)       
         
         return container
-
-    def _build_locomotive_list_section(self, mode):
-        title = f"Selected Files ({len(self.locomotive_files)} fragments)"
-        if mode == "std":
-            loco_group_box = QGroupBox(title)
-            self.loco_group_box_std = loco_group_box
-        else:
-            loco_group_box = QGroupBox(title)
-            self.loco_group_box_cfg = loco_group_box
+    
+    def _update_stats(self, image_path=None, payload_size=0):
+        # 1. ใช้การอ้างอิงตรงๆ หรือเช็คผ่าน hasattr (ถ้าไม่ชัวร์ว่าสร้าง Widget หรือยัง)
+        if not hasattr(self, 'stat_image_size'): return
         
-        loco_group_box.setMinimumHeight(200)
+        # 2. เตรียม Widgets ไว้ใช้งาน
+        lbl_name = self.stat_filename.value_label
+        lbl_img = self.stat_image_size.value_label
+        lbl_cap = self.stat_capacity.value_label
+
+        if image_path and os.path.exists(image_path):
+            try:
+                with Image.open(image_path) as img:
+                    width, height = img.size
+                    file_size = os.path.getsize(image_path)
+                    filename = os.path.basename(image_path)
+                    if len(filename) > 20:
+                        display_name = filename[:10] + "..." + filename[-7:]
+                    else:
+                        display_name = filename
+                    
+                    lbl_name.setText(display_name)
+                    lbl_name.setToolTip(image_path)
+                    
+                    # แสดงขนาดภาพและขนาดไฟล์
+                    lbl_img.setText(f"{width}×{height} ({format_file_size(file_size)})")
+                    
+                    # คำนวณ Capacity (หักลบพื้นที่สำหรับ Header)
+                    capacity_bytes = (width * height * 3) // 8
+                    lbl_cap.setText(format_file_size(capacity_bytes))
+                    
+                    self.max_capacity_bytes = capacity_bytes
+                    
+
+            except Exception as e:
+                print(f"Error updating stats: {e}")
+        else:
+            # Reset ทุกอย่างให้เป็นค่าเริ่มต้น (ถ้าไม่มีภาพ)
+            lbl_img.setText("No Image")
+            lbl_cap.setText("0 B")
+            self.max_capacity_bytes = 0
+            lbl_name.setText("None")
+            lbl_name.setToolTip("")
             
-        layout = QVBoxLayout()
-        layout.setContentsMargins(6, 12, 6, 6)
+    def _build_execution_group(self, button_text):
+        container = QWidget()
+        container.setMinimumHeight(60)  # Reduced from 100
+        container.setMaximumHeight(80)  # Reduced from 130
+        
+        # 1. Main Layout เป็นแนวตั้ง (Vertical)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        loco_list_widget = self._create_locomotive_list_widget()
-        loco_list_widget.setMinimumHeight(150)
-        
-        if mode == "std":
-            self.loco_list_widget_std = loco_list_widget
-        else:
-            self.loco_list_widget_cfg = loco_list_widget
-            
-        layout.addWidget(loco_list_widget, 1)
-        
-        # Add control buttons for both standalone and configurable modes
-        btn_row = self._create_locomotive_button_row()
-        layout.addLayout(btn_row, 0)
-        
-        loco_group_box.setLayout(layout)
-        return loco_group_box
-
-    def _build_metadata_section(self, mode):
-        return self._create_metadata_editor_container(mode)
-
-    def _create_locomotive_list_widget(self):
-        widget = QListWidget()
-        widget.setViewMode(QListWidget.ViewMode.IconMode)
-        widget.setResizeMode(QListWidget.ResizeMode.Adjust)
-        widget.setMovement(QListWidget.Movement.Static)
-        widget.setFlow(QListWidget.Flow.LeftToRight)
-        widget.setWrapping(True)
-        widget.setSpacing(12)
-        widget.setGridSize(QSize(130, 160))
-        widget.setStyleSheet(LOCO_LIST_STYLE)
-        return widget
-
-    def _create_locomotive_button_row(self):
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(4)
-        
-        btn_add = QPushButton("+ Add Files")
-        btn_add.setStyleSheet("font-weight: bold;")
-        btn_add.clicked.connect(self.browse_locomotive_files_append)
-        
-        btn_del = QPushButton("Delete Selected")
-        btn_del.clicked.connect(self.delete_selected_locomotive_files)
-        
-        btn_clear = QPushButton("Clear All")
-        btn_clear.clicked.connect(self.clear_locomotive_files)
-        
-        btn_row.addWidget(btn_add)
-        btn_row.addWidget(btn_del)
-        btn_row.addWidget(btn_clear)
-        btn_row.addStretch()
-        return btn_row
-    
-    
-    # ============================================================================
-    # Process method
-    # ============================================================================
-    
-    def _on_browse_public_key(self) -> None:
-        """
-        เลือกไฟล์ public key (.pem) – ตอนนี้ยังไม่ใช้ embed จริง
-        """
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Public Key PEM",
-            "",
-            "PEM Files (*.pem);;All Files (*)",
+        # สร้างปุ่ม 1
+        self.btn_exec = QPushButton(button_text)
+        self.btn_exec.setMinimumHeight(35)
+        self.btn_exec.setStyleSheet(
+            "font-weight: bold; font-size: 11pt; "
+            "background-color: #2d5a75; border-radius: 4px; color: white;"
         )
-        if not path:
-            return
+        
+        # Progress Bar for Standalone/Locomotive modes
+        self.standalone_progress_bar = QProgressBar()
+        self.standalone_progress_bar.setValue(0)
+        self.standalone_progress_bar.setTextVisible(False)
+        self.standalone_progress_bar.setFixedHeight(6)
+        
+        # Status Label for Standalone/Locomotive modes
+        self.standalone_status_label = QLabel("Ready.")
+        self.standalone_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.standalone_status_label.setStyleSheet("color: #888; font-size: 9pt;")
+        
+        # Initial visibility check based on current mode
+        # is_configurable = self.mode_combo.currentText() == "Configurable Model"
+        # self.standalone_progress_bar.setVisible(not is_configurable)
+        # self.standalone_status_label.setVisible(not is_configurable)
+
+        self.btn_exec.clicked.connect(
+            lambda: self._on_run_embed()
+        )
+        
+        # 2. สร้าง Layout แนวนอนสำหรับปุ่ม
+        hlayout = QHBoxLayout() 
+        hlayout.setSpacing(10)
+        hlayout.addWidget(self.btn_exec)
+
+        # 3. ยัด Layout ปุ่ม ลงใน Layout หลัก
+        layout.addLayout(hlayout)
+        layout.addWidget(self.standalone_progress_bar)
+        layout.addWidget(self.standalone_status_label)
+        
+        return container
     
-    def _on_run_embed(self) -> None:
-        if not self.current_image_path:
-            QMessageBox.warning(self, "Missing cover", "Please select a cover PNG.")
-            return
-
-        text = self.payload_text.toPlainText()
-        if not text:
-            QMessageBox.warning(self, "Empty payload", "Please enter some text.")
-            return
-
-        
-
-        password: Optional[str] = None
-        public_key_path: Optional[str] = None
-        
-        mode = self.enc_combo.currentData()  # "password" หรือ "public"
-        if mode == "password":
-            password = self.passphrase.text()
-            confirm_password = self.confirmpassphrase.text()
-            
-            # เช็คว่าได้กรอกรหัสหรือไม่
-            if not password:
-                QMessageBox.warning(
-                    self,
-                    "Missing password",
-                    "Please enter a password.",
-                )
-                return
-            
-            # เช็คว่ารหัสผ่านตรงกันหรือไม่
-            if password != confirm_password:
-                QMessageBox.warning(
-                    self,
-                    'Password Mismatch',
-                    'Passwords do not match. Please try again.'
-                )
-                # ล้างช่อง Confirm ให้กรอกใหม่เพื่อความสะดวก
-                self.confirmpassphrase.clear()
-                self.confirmpassphrase.setFocus()
-                return
-            
-        elif mode == "public":
-            public_key_path = self.public_key_edit.text().strip()
-            if not public_key_path:
-                QMessageBox.warning(
-                    self,
-                    "Missing public key",
-                    "Please select a public key PEM.",
-                )
-                return
-        else:
-            QMessageBox.critical(
-                self,
-                "Mode error",
-                f"Unknown encryption mode: {mode}",
-            )
-            return
-
-        self._update_progress_bar(self.btn_exec, self.progress_bar, "Embedding...", 0)
-        QApplication.processEvents()
-        
+    def _on_preview_image_dropped(self, file_path):
+        """Handle image dropped on preview area"""
         try:
-            lsb_engine = LSB_Plus()
+            # Validate file exists
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "Error", "File not found!")
+                return
             
-            # Extract text from QTextEdit and convert to bytes
-            payload_text = self.payload_text.toPlainText()
+            # Validate PNG file
+            if not file_path.lower().endswith('.png'):
+                QMessageBox.warning(self, "Error", "Only PNG files are supported!")
+                return
             
-            stego_arr, metrics = lsb_engine.embed(
-                cover_path=self.current_image_path,
-                payload_text=payload_text,
-                mode=mode,                    # "password" หรือ "public"
-                password=password,            # ส่ง None ถ้าเป็นโหมด public
-                public_key_path=public_key_path, # ส่ง None ถ้าเป็นโหมด password
-                show_progress=False,
-            )
-        except StegoEngineError as exc:
-            QMessageBox.critical(self, "Embed Error", str(exc))
-            self.status_label.setText("Error: embed failed.")
-            return
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Unexpected Error",
-                f"Unexpected error during embedding:\n\n{exc}",
-            )
-            self.status_label.setText("Error: unexpected exception.")
-            return
+            # Same logic as browse_single_image()
+            self.current_image_path = file_path
+            self.carrier_edit.setText(file_path)
+            self._load_image_preview(file_path)
+            payload_size = self._update_payload_size()
+            self._update_stats(file_path, payload_size)
+            self.update_capacity_indicator()
+            
+            # Update stats if they exist
+            if hasattr(self, 'stat_image_size'):
+                payload_size = len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
+                self._update_stats(file_path, payload_size)
+                self.update_capacity_indicator()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
+                    
+    def _create_stat_item(self, label_text, value_text, color):
+        """Create a single stat item"""
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent; border: none;")
         
-        self._update_progress_bar(self.btn_exec, self.progress_bar, "Embedding completed.", 100)
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         
-        QMessageBox.information(self, "Success", "Embedding process simulation completed.")
+        # Label
+        label = QLabel(label_text)
+        label.setStyleSheet("color: #888; font-size: 9pt; background: transparent; border: none;")
+        
+        # Value
+        value = QLabel(value_text)
+        value.setObjectName(f"stat_value_{label_text.replace(':', '').replace(' ', '_').lower()}")
+        value.setStyleSheet(f"color: {color}; font-size: 9pt; background: transparent; border: none;")
+        
+        layout.addWidget(label)
+        layout.addWidget(value)
+        layout.addStretch()
+        
+        # Store reference to value label
+        widget.value_label = value
+        
+        return widget
