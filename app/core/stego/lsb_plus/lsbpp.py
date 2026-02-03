@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import os
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -40,17 +40,28 @@ class LSBPP:
         encrypt_mode: str,
         password: Optional[str] = None,
         public_key_path: Optional[str] = None,
+        status_callback: Optional[Callable[[str, int], None]] = None
     ):
         
+        # ฟังก์ชันช่วยเรียก callback สั้นๆ (กัน error ถ้าไม่ได้ส่งมา)
+        def update(text, percent):
+            if status_callback:
+                status_callback(text, percent)
+        
         # 1) Load cover PNG and prepare payload to byte
+        update("Loading cover image...", 5)
         cover = self.load_png(cover_path)    
         payload_bytes = payload_text.encode("utf-8")
         
         # 2) Analyze texture
+        update("Analyzing image texture & capacity...", 15)
         gray, grad_map, entropy_map, surface_map = compute_texture_features(cover)
+        
+        update("Calculating embedding capacity...", 20)
         capacity_map = compute_capacity(surface_map)
         
         # 3) เลือกโหมด + สร้าง byte stream ตาม mode + seed สำหรับ pixel order
+        update("Encrypting payload & building stream...", 30)
         mode_str = (encrypt_mode or "").strip().lower()
         allowed_modes = ("password", "public", "none")
         if mode_str not in allowed_modes:
@@ -92,12 +103,15 @@ class LSBPP:
             seed_for_order = "default_seed" # หรือค่าคงที่อื่นๆ
             
         # 4) Build pixel order ด้วย seed_for_order
+        update("Generating secure pixel order...", 45)
         order = build_pixel_order(entropy_map, seed_for_order)
         
          # 5) Convert stream to bits
+        update("Converting to bitstream...", 50)
         bits = bitutil.bytes_to_bits(stream)
         
         # 6) Prepare block map & arrays
+        update("Preparing block optimization maps...", 60)
         h, w, _ = cover.shape
         num_pixels = h * w
         flat_capacity = capacity_map.reshape(-1)
@@ -135,6 +149,7 @@ class LSBPP:
         
             
         # 7) Embedding
+        update("Embedding data into pixels...", 70)
         thresholds = BlockSafetyThresholds()
         gray_for_coords = gray
         
@@ -161,11 +176,13 @@ class LSBPP:
         )
          
         # 8) Quality metrics
+        update("Calculating quality metrics...", 95)
         psnr_val = compute_psnr(cover, stego)
         ssim_val = compute_ssim(cover, stego)
         hist_drift_val = histogram_drift(cover, stego)
         
         metrics = EmbedMetrics(psnr=psnr_val, ssim=ssim_val, hist_drift=hist_drift_val)
+        update("Done.", 100)
         return stego, metrics
     
     def _build_symmetric_stream(
