@@ -105,145 +105,11 @@ TEXT_FILE_EXTENSIONS = {
     '.gitignore', '.dockerignore', '.editorconfig', '.prettierrc',
     '.eslintrc', '.babelrc', '.npmrc', '.nvmrc'
 }
-# class EmbedWorker(QThread):
-#     # Signals เพื่อส่งข้อมูลกลับไปที่ GUI
-#     finished_signal = pyqtSignal(object, object)  # ส่ง (stego_rgb, metrics) กลับไป
-#     error_signal = pyqtSignal(str)                # ส่ง Error Message กลับไป
-    
-    
-#     def __init__(self, engine, cover_path, payload_data, mode_str, pwd, pub_key):
-#         super().__init__()
-#         self.engine = engine
-#         self.cover_path = cover_path
-#         self.payload_data = payload_data
-#         self.mode_str = mode_str
-#         self.pwd = pwd
-#         self.pub_key = pub_key
-
-#     def run(self):
-#         """ทำงานใน Background Thread"""
-#         try:
-#             # เรียกใช้ Logic การฝังจาก LSBPP
-#             # หมายเหตุ: payload_data ควรถูกจัดการเรื่อง Type (str/bytes) มาแล้วจาก GUI หรือใน Engine
-#             stego_rgb, metrics = self.engine.embed(
-#                 cover_path=self.cover_path,
-#                 payload_text=self.payload_data, # ต้องระวังจุดนี้ (ดูคำอธิบายด้านล่างเรื่อง bytes)
-#                 encrypt_mode=self.mode_str,
-#                 password=self.pwd,
-#                 public_key_path=self.pub_key
-#             )
-            
-#             # เมื่อเสร็จ ส่งข้อมูลกลับ
-#             self.finished_signal.emit(stego_rgb, metrics)
-            
-#         except Exception as e:
-#             # เมื่อพัง ส่ง Error กลับ
-#             import traceback
-#             traceback.print_exc() # ช่วย Debug ใน Console
-#             self.error_signal.emit(str(e))
-
-# class CapacityWorker(QThread):
-#     """
-#     Worker สำหรับคำนวณความจุจริง (Adaptive Capacity) ของภาพ
-#     โดยใช้ Engine เดียวกับตอนฝัง (Texture Analysis)
-#     """
-#     finished_signal = pyqtSignal(int)  # ส่งค่าความจุ (Bytes) กลับมา
-
-#     def __init__(self, image_path):
-#         super().__init__()
-#         self.image_path = image_path
-
-#     def run(self):
-#         try:
-#             if not os.path.exists(self.image_path):
-#                 self.finished_signal.emit(0)
-#                 return
-
-#             # 1. โหลดภาพ
-#             img = Image.open(self.image_path)
-#             if img.mode != "RGB":
-#                 img = img.convert("RGB")
-            
-#             rgb = np.asarray(img, dtype=np.uint8)
-
-#             # 2. วิเคราะห์ Texture (เร็วแล้ว เพราะมี Numba ช่วย)
-#             # compute_texture_features return: gray, grad, entropy, surface
-#             _, _, _, surface_map = compute_texture_features(rgb)
-
-#             # 3. คำนวณ Capacity Map (0-3 bits ต่อพิกเซล)
-#             capacity_map = compute_capacity(surface_map)
-
-#             # 4. รวมจำนวนบิตทั้งหมดที่เก็บได้
-#             total_bits = np.sum(capacity_map)
-            
-#             # แปลงเป็น Bytes
-#             max_bytes = int(total_bits // 8)
-
-#             # (Optional) อาจจะเผื่อ Header ไว้เล็กน้อย (เช่น -100 bytes) หรือส่ง Raw ไปเลย
-#             self.finished_signal.emit(max_bytes)
-
-#         except Exception as e:
-#             print(f"Capacity calculation failed: {e}")
-#             self.finished_signal.emit(0)
-
-# class CapacityWorker(QThread):
-#     """
-#     Worker สำหรับคำนวณความจุจริง (Adaptive Capacity) ของภาพ
-#     ปรับปรุง: เพิ่ม Safety Margin เพื่อกัน Error "Not enough safe capacity"
-#     """
-#     finished_signal = pyqtSignal(int)
-
-#     def __init__(self, image_path):
-#         super().__init__()
-#         self.image_path = image_path
-
-#     def run(self):
-#         try:
-#             if not os.path.exists(self.image_path):
-#                 self.finished_signal.emit(0)
-#                 return
-
-#             # 1. โหลดภาพ
-#             img = Image.open(self.image_path)
-#             if img.mode != "RGB":
-#                 img = img.convert("RGB")
-            
-#             rgb = np.asarray(img, dtype=np.uint8)
-
-#             # 2. วิเคราะห์ Texture
-#             _, _, _, surface_map = compute_texture_features(rgb)
-
-#             # 3. คำนวณ Capacity Map (ทฤษฎี)
-#             capacity_map = compute_capacity(surface_map)
-#             total_theoretical_bits = np.sum(capacity_map)
-            
-#             # --- ส่วนที่ปรับปรุง ---
-            
-#             # 4.1 แปลงเป็น Bytes
-#             raw_bytes = int(total_theoretical_bits // 8)
-
-#             # 4.2 หัก Safety Margin (สำคัญ!)
-#             # จากภาพ Error ของคุณ: ฝังได้ 91% แล้วเต็ม แสดงว่า Capacity หายไป ~9%
-#             # เราจึงควรคูณ Factor ประมาณ 0.85 (85%) เพื่อความปลอดภัย
-#             # (กันกรณีที่ Block ถูก Skip เพราะ Safety Check ไม่ผ่าน)
-#             safe_bytes = int(raw_bytes * 0.85)
-
-#             # 4.3 หัก Header Overhead
-#             # LSB++ จะเติม Header (Mode, Length, Salt, Nonce, etc.)
-#             # ขนาด Header ปกติ ~36 Bytes (Symmetric) หรือ ~300+ Bytes (Public Key)
-#             # เราหักเผื่อไว้สัก 1 KB (1024 bytes) เพื่อความชัวร์
-#             final_capacity = max(0, safe_bytes - 1024)
-
-#             self.finished_signal.emit(final_capacity)
-
-#         except Exception as e:
-#             print(f"Capacity calculation failed: {e}")
-#             self.finished_signal.emit(0)
 
 class CapacityWorker(QThread):
     """
     Worker คำนวณความจุ: 
-    - Safe Limit (90%): จุดที่แนะนำ ปลอดภัยหายห่วง (สีเทา)
+    - Safe Limit (90%): จุดที่แนะนำปลอดภัย (สีเทา)
     - Max Limit (100%): จุดตายที่ฝังไม่ได้จริงๆ (สีแดง)
     - ช่วงระหว่าง Safe-Max: คือพื้นที่เสี่ยง (Risk) ที่ยังฝังได้ (สีส้ม)
     """
@@ -271,7 +137,6 @@ class CapacityWorker(QThread):
             _, _, _, surface_map = compute_texture_features(rgb)
             capacity_map = compute_capacity(surface_map)
             
-            # รวมจำนวนบิตทั้งหมดที่เก็บได้ (Theoretical Raw Bits)
             total_bits = np.sum(capacity_map)
             
             # 3. แปลงเป็น Bytes (Raw Capacity)

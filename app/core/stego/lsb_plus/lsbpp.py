@@ -110,40 +110,56 @@ class LSBPP:
         update("Converting to bitstream...", 50)
         bits = bitutil.bytes_to_bits(stream)
         
-        # 6) Prepare block map & arrays
+        # 6) Prepare block map & arrays (Optimized)
         update("Preparing block optimization maps...", 60)
         h, w, _ = cover.shape
         num_pixels = h * w
         flat_capacity = capacity_map.reshape(-1)
         
-        # block mapping
+        # Calculate grid dimensions
         block_rows = (h + 7) // 8
         block_cols = (w + 7) // 8
-        block_map = np.zeros(num_pixels, dtype=np.int32)
-        for idx in range(num_pixels):
-            yy = idx // w
-            xx = idx % w
-            br = yy // 8
-            bc = xx // 8
-            block_map[idx] = br * block_cols + bc
-
         num_blocks = block_rows * block_cols
+
+        # --- [OPTIMIZATION START] Replace Python Loop with NumPy Broadcasting ---
+        # 1. สร้าง index แถว (y) และคอลัมน์ (x) ระดับ Block
+        # เดิม: br = (idx // w) // 8  -> เทียบเท่ากับ row_idx // 8
+        # เดิม: bc = (idx % w) // 8   -> เทียบเท่ากับ col_idx // 8
+        
+        row_indices = np.arange(h, dtype=np.int32) // 8
+        col_indices = np.arange(w, dtype=np.int32) // 8
+
+        # 2. คำนวณ Block ID พร้อมกันทั้งภาพ (Broadcasting)
+        # สูตร: block_id = br * block_cols + bc
+        # shape: (h, 1) * scalar + (1, w) -> (h, w)
+        block_map_2d = (row_indices[:, None] * block_cols) + col_indices[None, :]
+        
+        # 3. Flatten ให้เป็น 1D array เหมือนเดิม
+        block_map = block_map_2d.ravel()
+        # --- [OPTIMIZATION END] -----------------------------------------------
+
         block_done = np.zeros(num_blocks, dtype=bool)
         
         # pixel positions per block in "order"
-        # 1. ดึง Block ID ของพิกเซลทั้งหมดตามลำดับ 'order' ในครั้งเดียว
-        pixel_block_ids = block_map[order.astype(int)]
+        # ส่วนนี้ logic ดีอยู่แล้ว (Vectorized) แต่จัดระเบียบให้สะอาดขึ้น
+        # 1. Map พิกเซลทั้งหมดตามลำดับ order ให้กลายเป็น Block ID
+        pixel_block_ids = block_map[order]  # order should already be int array
 
-        # 2. ใช้การจัดเรียง (Sorting) เพื่อจัดกลุ่มข้อมูลที่เหมือนกันไว้ด้วยกัน
+        # 2. Sort เพื่อจัดกลุ่ม Block ID ที่เหมือนกันให้อยู่ติดกัน
         sort_idx = np.argsort(pixel_block_ids)
         sorted_blocks = pixel_block_ids[sort_idx]
 
-        # 3. หาจุดรอยต่อที่ Block ID เปลี่ยนเพื่อแบ่งกลุ่ม (Splitting)
+        # 3. หาจุดรอยต่อ (Split points) เพื่อแยกกลุ่ม
+        # np.diff หาจุดที่ค่าเปลี่ยน (เช่นจาก Block 0 เป็น Block 1)
         diff_idx = np.where(np.diff(sorted_blocks) != 0)[0] + 1
+        
+        # 4. แบ่ง array ออกเป็นชิ้นๆ ตาม Block
         split_positions = np.split(sort_idx, diff_idx)
+        
+        # 5. ระบุว่าชิ้นไหนคือ Block ID อะไร
         unique_block_ids = sorted_blocks[np.insert(diff_idx, 0, 0)]
 
-        # 4. สร้าง Dictionary ผลลัพธ์
+        # 6. สร้าง Dictionary
         block_pixel_positions = dict(zip(unique_block_ids, split_positions))
         
         
