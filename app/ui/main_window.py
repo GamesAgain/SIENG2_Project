@@ -28,8 +28,8 @@ class MainWindow(QMainWindow):
         
         tabs = QTabWidget()
         tabs.addTab(EmbedTab(), "Embed")
-        tabs.addTab(EmbedTabMockUp(), "Extract")
-        tabs.addTab(QWidget(), "Key Manager")
+        tabs.addTab(QWidget(), "Extract")
+        tabs.addTab(EmbedTabMockUp(), "Embed Mockup")
         
         self.setCentralWidget(tabs)
 

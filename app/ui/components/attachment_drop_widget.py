@@ -37,6 +37,10 @@ class AttachmentDropWidget(QWidget):
     def set_allowed_extensions(self, extensions):
         """Update allowed extensions dynamically"""
         self.allowed_extensions = extensions
+        
+    def clear_allowed_extensions(self, extensions):
+        """Clear allowed extensions dynamically"""
+        self.allowed_extensions = None
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
