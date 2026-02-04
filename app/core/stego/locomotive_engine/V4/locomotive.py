@@ -1,7 +1,7 @@
 import os
 import math
 import struct
-# import random <-- ลบออก เพราะไม่ได้ใช้สร้างขยะแล้ว
+import random
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 class StegoLogic:
@@ -21,62 +21,94 @@ class StegoLogic:
     @staticmethod
     def fragment_payload(data: bytes) -> bytes:
         """
-        แปลงข้อมูลดิบ -> ข้อมูลที่ถูกหั่นเป็นท่อนๆ (Linked List)
-        Structure: [SIG(4)][NextOffset(4)][Len(4)] + [Data]
+        หั่นข้อมูล -> แปะเบอร์ลำดับ -> สับตำแหน่ง (Shuffle)
+        Structure: [SIG(4)][Index(4)][Len(4)] + [Data]
         """
         BLOCK_SIZE = 4096 
-        stream = b''
         total_len = len(data)
-        chunks = math.ceil(total_len / BLOCK_SIZE)
+        chunks_count = math.ceil(total_len / BLOCK_SIZE)
         
-        for i in range(chunks):
+        # 1. สร้าง List เก็บชิ้นส่วน
+        chunk_list = []
+        
+        for i in range(chunks_count):
             start = i * BLOCK_SIZE
             end = start + BLOCK_SIZE
             chunk_data = data[start:end]
+            
+            # เก็บข้อมูลคู่กับลำดับ (i) ไว้ก่อน
+            chunk_list.append({
+                'index': i,
+                'data': chunk_data
+            })
+            
+        # 2. *** สับตำแหน่ง (Shuffle) ***
+        random.shuffle(chunk_list)
+        
+        # 3. สร้าง Stream จากข้อมูลที่สลับที่แล้ว
+        final_stream = b''
+        
+        for item in chunk_list:
+            idx = item['index']
+            chunk_data = item['data']
             chunk_len = len(chunk_data)
             
-            # คำนวณ Offset ไปยังท่อนถัดไป
-            if i == chunks - 1:
-                next_offset = 0 # ท่อนสุดท้าย Offset เป็น 0
-            else:
-                # Offset = Header(12) + Data
-                next_offset = 12 + chunk_len
-                
-            # สร้าง Header 12 bytes
-            header = struct.pack('>4sII', StegoLogic.FRAG_SIG, next_offset, chunk_len)
+            # Header ใหม่ (12 bytes): [SIG] + [Index] + [Len]
+            header = struct.pack('>4sII', StegoLogic.FRAG_SIG, idx, chunk_len)
             
-            stream += header + chunk_data
+            final_stream += header + chunk_data
             
-        return stream
+        return final_stream
 
     @staticmethod
     def defragment_payload(stream: bytes) -> bytes:
         """
-        อ่านข้อมูลที่ถูกหั่นแบบ Linked List
+        อ่านข้อมูล-> เก็บใส่ตะกร้า -> เรียงตามเลข Index -> รวมร่าง
         """
-        clean_data = b''
+        found_chunks = []
         cursor = 0
+        stream_len = len(stream)
         
-        while cursor < len(stream):
-            # 1. เช็กว่าเหลือพออ่าน Header ไหม
-            if cursor + 12 > len(stream): break
+        # 1. วนลูปอ่านจนจบไฟล์ (Scan ทั้งก้อน)
+        while cursor < stream_len:
+            # เช็กว่าเหลือพออ่าน Header ไหม (12 bytes)
+            if cursor + 12 > stream_len: 
+                break
             
-            # 2. อ่าน Header
-            sig, next_offset, length = struct.unpack('>4sII', stream[cursor:cursor+12])
+            # อ่าน Header
+            sig, idx, length = struct.unpack('>4sII', stream[cursor:cursor+12])
             
-            # 3. ตรวจสอบลายเซ็น
-            if sig != StegoLogic.FRAG_SIG: break 
+            # ตรวจสอบลายเซ็น
+            if sig != StegoLogic.FRAG_SIG:
+                # ถ้าไม่เจอ SIG อาจจะแปลว่าไฟล์เสียหาย หรืออ่านผิดตำแหน่ง
+                # ในที่นี้ให้ break ถือว่าจบข้อมูล
+                break
             
-            # 4. อ่านข้อมูลจริง
+            # อ่านข้อมูลจริง
             data_start = cursor + 12
             data_end = data_start + length
-            clean_data += stream[data_start:data_end]
             
-            # 5. ถ้า Offset 0 คือจบไฟล์
-            if next_offset == 0: break
+            if data_end > stream_len:
+                break # ข้อมูลไม่ครบ
+                
+            chunk_data = stream[data_start:data_end]
             
-            # 6. กระโดดไปยังท่อนถัดไป (ตาม Offset ที่ระบุใน Header)
-            cursor += next_offset
+            # เก็บใส่ตะกร้าไว้ก่อน
+            found_chunks.append({
+                'index': idx,
+                'data': chunk_data
+            })
+            
+            # ขยับ Cursor ไปยังบล็อกถัดไป (ที่วางติดกันอยู่)
+            cursor = data_end
+            
+        if not found_chunks:
+            return None
+
+        # 2. *** เรียงลำดับ (Sort) ตาม Index ***
+        found_chunks.sort(key=lambda x: x['index'])
+        
+        clean_data = b''.join([item['data'] for item in found_chunks])
             
         return clean_data
 
