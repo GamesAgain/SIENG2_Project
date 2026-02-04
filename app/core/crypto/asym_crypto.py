@@ -29,14 +29,14 @@ RSAPrivateKey = rsa.RSAPrivateKey
 RSAPublicKey = rsa.RSAPublicKey
 
 
-def generate_rsa_keypair(key_size: int = 2048) -> Tuple[RSAPrivateKey, RSAPublicKey]:
+def generate_rsa_keypair(key_size: int = 3072) -> Tuple[RSAPrivateKey, RSAPublicKey]:
     """
     Generate an RSA key pair.
 
     :param key_size: Key size in bits (e.g., 2048, 3072).
     :return: (private_key, public_key)
     """
-    if key_size < 2048:
+    if key_size < 3072:
         raise StegoEngineError("generate_rsa_keypair: key_size must be >= 2048 bits.")
     try:
         private_key = rsa.generate_private_key(

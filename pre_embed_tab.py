@@ -17,8 +17,6 @@ from app.ui.styles import DARK_STYLE
 
 # Mock imports for standalone testing
 try:
-    from app.core.stego.lsb_plus_engine.lsb_plus import LSB_Plus
-    from app.utils.exceptions import StegoEngineError
     from app.utils.file_io import format_file_size
     MOCK_MODE = False
 except ImportError:

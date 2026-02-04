@@ -29,12 +29,16 @@ from PyQt6.QtWidgets import (
     QFileDialog, QStyle
 )
 
+from app.core.stego.lsb_plus.engine.noise_predictor import adjust_capacity_for_pixel
+from app.core.stego.lsb_plus.engine.pixel_order import build_pixel_order
+
 try:
     from PIL import Image
 except ImportError:
     Image = None
     
     
+from app.core.stego.lsb_plus.engine.embedding import calculate_exact_capacity
 from app.core.stego.lsb_plus.lsbpp import LSBPP
 from app.utils.file_io import format_file_size
 from app.utils.gui_helpers import disconnect_signal_safely
@@ -107,13 +111,6 @@ TEXT_FILE_EXTENSIONS = {
 }
 
 class CapacityWorker(QThread):
-    """
-    Worker คำนวณความจุ: 
-    - Safe Limit (90%): จุดที่แนะนำปลอดภัย (สีเทา)
-    - Max Limit (100%): จุดตายที่ฝังไม่ได้จริงๆ (สีแดง)
-    - ช่วงระหว่าง Safe-Max: คือพื้นที่เสี่ยง (Risk) ที่ยังฝังได้ (สีส้ม)
-    """
-    # Signal ส่งกลับ 2 ค่า: (safe_bytes, max_bytes)
     finished_signal = pyqtSignal(int, int)
 
     def __init__(self, image_path):
@@ -126,41 +123,43 @@ class CapacityWorker(QThread):
                 self.finished_signal.emit(0, 0)
                 return
 
-            # 1. โหลดภาพ
-            # ใช้ .convert("RGB") เพื่อรองรับ PNG, JPG, WEBP ฯลฯ ให้เป็นมาตรฐานเดียวกัน
             img = Image.open(self.image_path).convert("RGB")
             rgb = np.asarray(img, dtype=np.uint8)
+            h, w, _ = rgb.shape
 
-            # 2. วิเคราะห์ Texture (ใช้ Engine เดียวกับตอนฝังจริง)
-            # - compute_texture_features จะคำนวณ Entropy, Gradient ฯลฯ
-            # - compute_capacity จะแปลงค่าเหล่านั้นเป็น bit-depth (0-3 bits/pixel)
-            _, _, _, surface_map = compute_texture_features(rgb)
+            # 1. วิเคราะห์
+            gray, _, entropy_map, surface_map = compute_texture_features(rgb)
             capacity_map = compute_capacity(surface_map)
             
-            total_bits = np.sum(capacity_map)
+            # 2. Pixel Order
+            default_seed = "default_seed" 
+            order = build_pixel_order(entropy_map, default_seed)
+
+            # 3. คำนวณความจุ (V8 Synced)
+            total_bits = calculate_exact_capacity(
+                order, 
+                capacity_map.ravel(), 
+                gray, 
+                adjust_capacity_for_pixel, 
+                w
+            )
             
-            # 3. แปลงเป็น Bytes (Raw Capacity)
+            # --- DEBUG LOG ---
+            # ดูค่านี้ใน Terminal ว่าได้เท่าไหร่? (ควรจะได้ประมาณ 644 bits สำหรับภาพ 2004.png)
+            print(f"[DEBUG] Total Bits Found: {total_bits}") 
+            # -----------------
+
             raw_bytes = int(total_bits // 8)
-
-            # ------------------------------------------------------------------
-            # 4. ปรับจูนขีดจำกัด (Calibration)
-            # ------------------------------------------------------------------
             
-            # [A] Safe Limit (โซนสีเทา -> สีส้ม)
-            # - เราใช้ Header 256 bytes (เผื่อไว้กลางๆ)
-            # - Safety Factor 90% (เผื่อ Drift Control ตัดบาง Block ทิ้ง)
-            # นี่คือจุดที่ "แนะนำ" ให้ User ไม่ควรเกิน
-            avg_header_overhead = 256
-            limit_safe = max(0, int(raw_bytes * 0.90) - avg_header_overhead)
+            # Overhead 52 bytes (Mode 1 + Header 7 + Salt 16 + Nonce 12 + Tag 16)
+            sym_overhead = 52       
+            asym_overhead = 566
 
-            # [B] Max Limit (โซนสีส้ม -> สีแดง) **จุดตาย**
-            # - เราใช้ Header ขั้นต่ำสุด (Symmetric Mode ~52 bytes) -> ปัดเป็น 55
-            # - Safety Factor 100% (ไม่เผื่อแล้ว เอาให้สุดขอบ)
-            # นี่คือจุด "ขอบเหว" ถ้าเกินนี้คือ Error "Not enough space" แน่นอน
-            min_header_overhead = 55  # Mode(1) + Magic(3) + Len(4) + Salt(16) + Nonce(12) + Tag(16) + Padding
-            limit_max = max(0, int(raw_bytes * 1.00) - min_header_overhead)
+            # Max Limit: Raw - 52
+            # ถ้า Raw = 80 -> Max = 28 (ถูกต้องตามที่คุณต้องการ)
+            limit_max = max(0, raw_bytes - sym_overhead)
+            limit_safe = max(0, raw_bytes - asym_overhead)
 
-            # ส่งค่ากลับไปที่ GUI
             self.finished_signal.emit(limit_safe, limit_max)
 
         except Exception as e:
@@ -295,16 +294,11 @@ class EmbedTab(QWidget):
         2. Prepares data (UI -> Variables).
         3. Starts the Background Worker Thread.
         """
-        # ---------------------------------------------------------
-        # 1. Validation & Input Preparation (Main Thread)
-        # ---------------------------------------------------------
         
-        # 1.1 เช็ค Cover Image
         if not hasattr(self, 'current_image_path') or not self.current_image_path:
             QMessageBox.warning(self, "Missing Input", "Please select a carrier image first!")
             return
 
-        # 1.2 เช็ค Payload และอ่านข้อมูลเตรียมไว้
         current_tab_index = self.payload_tabs.currentIndex()
         payload_data = None
         
@@ -331,14 +325,13 @@ class EmbedTab(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "File Error", f"Could not read payload file:\n{str(e)}")
                 return
-
-        # 1.3 อ่านค่า Config การเข้ารหัส (ต้องทำใน Main Thread)
+            
         enc_mode_idx = self.enc_combo.currentIndex()
         is_encrypted = self.encryption_box.isChecked()
         
         mode_str = "none"
         pwd = None
-        pub_key = None
+        pub_key_path = None
         
         if is_encrypted:
             if enc_mode_idx == 0: # Password
@@ -355,24 +348,18 @@ class EmbedTab(QWidget):
                     
             elif enc_mode_idx == 1: # Public Key
                 mode_str = "public"
-                pub_key = self.public_key_edit.text()
-                if not pub_key or not os.path.exists(pub_key):
+                pub_key_path = self.public_key_edit.text()
+                if not pub_key_path or not os.path.exists(pub_key_path):
                     QMessageBox.warning(self, "Missing Input", "Please select a valid Public Key file (.pem)!")
                     return
 
-        # ---------------------------------------------------------
-        # 2. UI Feedback: ล็อกหน้าจอ เตรียมเริ่มงาน
-        # ---------------------------------------------------------
-        self.btn_exec.setEnabled(False) # ล็อกปุ่มกันกดซ้ำ
+        self.btn_exec.setEnabled(False)
+        self.btn_savestg.setEnabled(False); self.btn_savestg.hide()
         self.standalone_status_label.setText("Initializing...")
         self.standalone_progress_bar.setRange(0, 100)
         self.standalone_progress_bar.setValue(0)
-        
-        # ---------------------------------------------------------
-        # 3. Threading: สร้างและสั่งรัน Worker
-        # ---------------------------------------------------------
+
         try:
-            # สร้าง Engine
             engine = LSBPP()
 
             # สร้าง Worker (ส่งข้อมูลที่เตรียมไว้เข้าไป)
@@ -382,7 +369,7 @@ class EmbedTab(QWidget):
                 payload_data, 
                 mode_str, 
                 pwd, 
-                pub_key
+                pub_key_path
             )
             
             # เชื่อมต่อ Signals (สั่งงานข้าม Thread)
@@ -409,54 +396,30 @@ class EmbedTab(QWidget):
     def _on_embed_finished(self, stego_rgb, metrics):
         """ทำงานเมื่อ Worker ประมวลผลเสร็จสิ้น"""
         
-        # 1. คืนค่า UI ให้พร้อมใช้งาน
         self.standalone_progress_bar.setValue(100)
         self.standalone_status_label.setText("Processing Complete.")
         self.btn_exec.setEnabled(True)
-
-        # 2. เข้าสู่กระบวนการ Save File (ต้องทำบน Main Thread เพราะมี Dialog)
+        self.btn_savestg.setEnabled(True)
+        
+        self.btn_savestg.show()
+        self.btn_savestg.setEnabled(True)
+        
         try:
-            orig_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
-            default_save_name = f"{orig_name}_stego.png"
-            
-            save_path, _ = QFileDialog.getSaveFileName(
-                self, 
-                "Save Stego Image", 
-                default_save_name, 
-                "PNG Images (*.png)"
-            )
-
-            if save_path:
-                if Image: 
-                    # แปลง Array กลับเป็นรูปแล้วบันทึก
-                    final_image = Image.fromarray(stego_rgb)
-                    final_image.save(save_path)
-
-                    # แสดงผลลัพธ์
-                    info_msg = (
-                        f"Embedding Completed Successfully!\n\n"
-                        f"Saved to: {save_path}\n\n"
-                        f"--- Quality Metrics ---\n"
-                        f"PSNR: {metrics.psnr:.2f} dB\n"
-                        f"SSIM: {metrics.ssim:.4f}\n"
-                        f"Drift: {metrics.hist_drift:.4f}"
-                    )
-                    QMessageBox.information(self, "Success", info_msg)
-                    self.standalone_status_label.setText("Saved successfully.")
-                else:
-                    QMessageBox.critical(self, "Error", "PIL library missing.")
-            else:
-                self.standalone_status_label.setText("Save cancelled.")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Error during saving:\n{str(e)}")
+            self.btn_savestg.clicked.disconnect()
+        except TypeError:
+            pass
+        
+        self.btn_savestg.clicked.connect(
+            lambda: self._on_save_stego(stego_rgb, metrics)
+        )
+        
 
     # ฟังก์ชันจัดการ Error
     def _on_embed_error(self, error_msg):
         """ทำงานเมื่อ Worker ส่ง Error กลับมา"""
         self.standalone_status_label.setText("Error occurred.")
         self.standalone_progress_bar.setValue(0)
-        self.btn_exec.setEnabled(True) # ปลดล็อกปุ่มให้กดใหม่ได้
+        self.btn_exec.setEnabled(True)
         
         QMessageBox.critical(self, "Embedding Error", error_msg)
 
@@ -717,52 +680,58 @@ class EmbedTab(QWidget):
     # ========================================================================
             
     def update_capacity_indicator(self):
-        """คำนวณขนาดและแสดงสถานะ 3 ระดับ (Safe / Warning / Impossible)"""
+        """คำนวณขนาดและแสดงสถานะ 3 ระดับ"""
         if not hasattr(self, 'payload_text'): return
 
         # 1. หาขนาด Payload ปัจจุบัน
         text_bytes = self.payload_text.toPlainText().encode('utf-8')
         current_size = len(text_bytes)
         
-        # 2. ดึงค่า Limit ที่คำนวณไว้ (ถ้าไม่มีให้เป็น 0)
+        # 2. ดึงค่า Limit
         safe_cap = getattr(self, 'limit_safe', 0)
         max_cap = getattr(self, 'limit_max', 0)
         
-        # กรณีไม่มีภาพ หรือยังคำนวณไม่เสร็จ
-        if max_cap == 0:
+        if max_cap == 0 and safe_cap == 0:
+            # กรณีไม่มีภาพ หรือภาพเล็กเกินเยียวยาจริงๆ
             self.lbl_capacity.setText(f"Size: {format_file_size(current_size)}")
             self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
             self._update_payload_size()
             return
 
-        # 3. สร้างข้อความแสดงผล: "Current / Safe_Limit"
-        cap_text = f"Capacity: {format_file_size(current_size)} / {format_file_size(safe_cap)}"
+        # ==========================================================
+        # [CRITICAL FIX] เปลี่ยนตัวหารจาก safe_cap เป็น max_cap
+        # ==========================================================
+        # เดิม: ... / {format_file_size(safe_cap)}  <-- สาเหตุที่โชว์ 0 B
+        # ใหม่: ... / {format_file_size(max_cap)}   <-- จะโชว์ 28 B ตามต้องการ
         
-        # 4. ตรวจสอบเงื่อนไข 3 ระดับ
+        cap_text = f"Capacity: {format_file_size(current_size)} / {format_file_size(max_cap)}"
+        
+        # 4. ตรวจสอบเงื่อนไข 3 ระดับ (Logic สีถูกต้องแล้ว)
         if current_size <= safe_cap:
-            # ZONE 1: SAFE (สีเทา) -> ปลอดภัย
+            # SAFE (สีเทา)
             self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
+            self.lbl_capacity.setToolTip("Safe: Optimal payload size. Ready to embed.")
             
         elif current_size <= max_cap:
-            # ZONE 2: RISK (สีส้ม) -> เกินคำแนะนำ แต่ยังไม่ชนเพดาน (เสี่ยง)
+            # RISK (สีส้ม) - Password Mode ใช้ได้
             self.lbl_capacity.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 8pt;")
-            cap_text += " (Risk)"
+            self.lbl_capacity.setToolTip("Risk: Large payload. Public Key embedding may fail")
             
         else:
-            # ZONE 3: IMPOSSIBLE (สีแดง) -> เกินเพดาน (ฝังไม่ได้แน่นอน)
+            # IMPOSSIBLE (สีแดง)
             self.lbl_capacity.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 8pt;")
-            cap_text += " (Over Limit)"
+            self.lbl_capacity.setToolTip("Over Limit: Capacity exceeded. Cannot embed.")
             
         self.lbl_capacity.setText(cap_text)
-        
-        # อัปเดต Stats ฝั่งซ้ายด้วย
         self._update_payload_size()
             
     def _start_capacity_calculation(self, image_path):
         """สั่งเริ่มคำนวณความจุใน Background"""
         # ตั้งค่า UI ให้รู้ว่ากำลังคิดอยู่
         if hasattr(self, 'stat_capacity'):
-             self.stat_capacity.value_label.setText("Calculating...")
+            self.lbl_capacity.setText("Calculating...")
+            self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
+            self.stat_capacity.value_label.setText("Calculating...")
         
         # หยุด Worker เก่าถ้าทำงานอยู่ (กัน Race Condition กรณีเปลี่ยนรูปเร็วๆ)
         if hasattr(self, 'cap_worker') and self.cap_worker.isRunning():
@@ -775,22 +744,33 @@ class EmbedTab(QWidget):
         self.cap_worker.start()
 
     def _on_capacity_computed(self, safe_bytes, max_bytes):
-        """รับค่าความจุมาเก็บไว้ทั้ง 2 ระดับ (Safe / Max)"""
+        """รับค่าความจุมาเก็บไว้ทั้ง 2 ระดับ"""
         self.limit_safe = safe_bytes
         self.limit_max = max_bytes
         
-        self.max_capacity_bytes = safe_bytes 
-        
-        # เรียกอัปเดต UI ทันที
         self.update_capacity_indicator()
         
-        # Update Stats (ซ้ายมือ) - โชว์ Safe Limit เป็นค่ามาตรฐาน
+        # Update Stats (ซ้ายมือ) 
         if hasattr(self, 'stat_capacity'):
-             self.stat_capacity.value_label.setText(format_file_size(safe_bytes))
+             # เปลี่ยน Label ให้สื่อความหมายชัดเจน
+             self.stat_capacity.findChild(QLabel).setText("Max Capacity:") 
+             # โชว์ค่า Max (28 B) แทน Safe (0 B)
+             self.stat_capacity.value_label.setText(format_file_size(max_bytes))
 
     def open_text_editor(self):
         current_text = self.payload_text.toPlainText()
-        dialog = TextEditorDialog(current_text, self)
+        
+        # ดึงค่า Limit ที่คำนวณไว้จาก CapacityWorker (ถ้าไม่มีให้เป็น 0)
+        safe_cap = getattr(self, 'limit_safe', 0)
+        max_cap = getattr(self, 'limit_max', 0)
+        
+        # ส่ง safe_limit และ max_limit เข้าไปใน Dialog
+        dialog = TextEditorDialog(
+            initial_text=current_text, 
+            safe_limit=safe_cap, 
+            max_limit=max_cap, 
+            parent=self
+        )
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.payload_text.setPlainText(dialog.get_text())
@@ -1028,7 +1008,7 @@ class EmbedTab(QWidget):
         layout.addWidget(self.public_key_edit) 
 
         # Attachment widget for public key (accept .pem by default)
-        self.pubkey_attachment = AttachmentDropWidget()
+        self.pubkey_attachment = AttachmentDropWidget(allowed_extensions='.pem')
         
         try:
             self.pubkey_attachment.empty_label.setText("Import Public Key\n(.pem files)")
@@ -1143,7 +1123,7 @@ class EmbedTab(QWidget):
         
         
         # File Name Stat
-        self.stat_filename = self._create_stat_item("File:", "None", "#e0e0e0")
+        self.stat_filename = self._create_stat_item("File:", "No Image", "#e0e0e0")
         layout.addWidget(self.stat_filename)
         
         # Image Size Stat
@@ -1182,10 +1162,6 @@ class EmbedTab(QWidget):
                     # แสดงขนาดภาพและขนาดไฟล์
                     lbl_img.setText(f"{width}×{height} ({format_file_size(file_size)})")
                     
-                    # คำนวณ Capacity (หักลบพื้นที่สำหรับ Header)
-                    # capacity_bytes = (width * height * 3) // 8
-                    # lbl_cap.setText(format_file_size(capacity_bytes))
-                    
                     lbl_cap.setText("Calculating...")
                     self.max_capacity_bytes = 0
                     
@@ -1216,6 +1192,15 @@ class EmbedTab(QWidget):
             "background-color: #2d5a75; border-radius: 4px; color: white;"
         )
         
+        self.btn_savestg = QPushButton("Save stego")
+        self.btn_savestg.setMinimumHeight(35)
+        self.btn_savestg.setStyleSheet(
+            "font-weight: bold; font-size: 11pt; "
+            "background-color: #888; border-radius: 4px; color: white;"
+        )
+        self.btn_savestg.setEnabled(False)
+        self.btn_savestg.hide()
+        
         # Progress Bar for Standalone/Locomotive modes
         self.standalone_progress_bar = QProgressBar()
         self.standalone_progress_bar.setValue(0)
@@ -1240,6 +1225,7 @@ class EmbedTab(QWidget):
         hlayout = QHBoxLayout() 
         hlayout.setSpacing(10)
         hlayout.addWidget(self.btn_exec)
+        hlayout.addWidget(self.btn_savestg)
 
         # 3. ยัด Layout ปุ่ม ลงใน Layout หลัก
         layout.addLayout(hlayout)
@@ -1247,6 +1233,43 @@ class EmbedTab(QWidget):
         layout.addWidget(self.standalone_status_label)
         
         return container
+    
+    def _on_save_stego(self, stego_rgb, metrics):
+        try:
+            orig_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
+            default_save_name = f"{orig_name}_stego.png"
+            
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, 
+                "Save Stego Image", 
+                default_save_name, 
+                "PNG Images (*.png)"
+            )
+
+            if save_path:
+                if Image: 
+                    # แปลง Array กลับเป็นรูปแล้วบันทึก
+                    final_image = Image.fromarray(stego_rgb)
+                    final_image.save(save_path)
+
+                    # แสดงผลลัพธ์
+                    info_msg = (
+                        f"Embedding Completed Successfully!\n\n"
+                        f"--- Quality Metrics ---\n"
+                        f"PSNR: {metrics.psnr:.2f} dB\n"
+                        f"SSIM: {metrics.ssim:.4f}\n"
+                        f"Drift: {metrics.hist_drift:.4f}\n"
+                        f"Saved to: {save_path}"
+                    )
+                    QMessageBox.information(self, "Success", info_msg)
+                    self.standalone_status_label.setText("Saved successfully.")
+                else:
+                    QMessageBox.critical(self, "Error", "PIL library missing.")
+            else:
+                self.standalone_status_label.setText("Save cancelled.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Error during saving:\n{str(e)}")
     
     def _on_preview_image_dropped(self, file_path):
         """Handle image dropped on preview area"""
