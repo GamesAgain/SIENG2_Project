@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QTabWidget, QLineEdit)
 from PyQt6.QtCore import Qt
 
-from locomotive import StegoLogic
+from locomotive import Locomotive
 
 class StegoApp(QMainWindow):
     def __init__(self):
@@ -39,17 +39,17 @@ class StegoApp(QMainWindow):
         self.txt_hide_img = QLineEdit(); self.txt_hide_img.setPlaceholderText("เลือกรูป PNG ต้นฉบับ")
         btn_img = QPushButton("เลือกรูปภาพ")
         # ส่ง self ไปให้ locomotive
-        btn_img.clicked.connect(lambda: StegoLogic.select_file(self, self.txt_hide_img, "Image"))
+        btn_img.clicked.connect(lambda: Locomotive.select_file(self, self.txt_hide_img, "Image"))
         
         self.txt_hide_secret = QLineEdit(); self.txt_hide_secret.setPlaceholderText("เลือกไฟล์ที่จะซ่อน")
         btn_secret = QPushButton("เลือกไฟล์ลับ")
         # ส่ง self ไปให้ locomotive
-        btn_secret.clicked.connect(lambda: StegoLogic.select_file(self, self.txt_hide_secret, "File"))
+        btn_secret.clicked.connect(lambda: Locomotive.select_file(self, self.txt_hide_secret, "File"))
         
         btn_start = QPushButton("เริ่มซ่อนไฟล์")
         btn_start.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
         # ส่ง self ไปให้ locomotive
-        btn_start.clicked.connect(lambda: StegoLogic.run_hide(self))
+        btn_start.clicked.connect(lambda: Locomotive.embed(self))
 
         layout.addWidget(QLabel("1. รูปภาพหลัก (PNG):"))
         layout.addLayout(self.row(self.txt_hide_img, btn_img))
@@ -65,12 +65,12 @@ class StegoApp(QMainWindow):
         self.txt_ext_img = QLineEdit(); self.txt_ext_img.setPlaceholderText("เลือกรูปที่มีไฟล์ซ่อนอยู่")
         btn_img = QPushButton("เลือกรูปภาพ")
         # ส่ง self ไปให้ locomotive
-        btn_img.clicked.connect(lambda: StegoLogic.select_file(self, self.txt_ext_img, "Image"))
+        btn_img.clicked.connect(lambda: Locomotive.select_file(self, self.txt_ext_img, "Image"))
         
         btn_extract = QPushButton("ถอดไฟล์ออกมา")
         btn_extract.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 10px;")
         # ส่ง self ไปให้ locomotive
-        btn_extract.clicked.connect(lambda: StegoLogic.run_extract(self))
+        btn_extract.clicked.connect(lambda: Locomotive.run_extract(self))
 
         layout.addWidget(QLabel("เลือกรูปภาพเพื่อถอดข้อมูล:"))
         layout.addLayout(self.row(self.txt_ext_img, btn_img))
