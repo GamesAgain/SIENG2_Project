@@ -117,21 +117,18 @@ class StegoLogic:
     # =========================================================
 
     @staticmethod
-    def run_hide(app):
+    def embed(app, locomotive_files, payload_path):
         """
         app: คือตัวแปร self จาก main.py เพื่อให้เราเข้าถึง txt_hide_img, txt_hide_secret ได้
         """
-        raw_img_text = app.txt_hide_img.text()
-        secret_path = app.txt_hide_secret.text()
+        img_list = locomotive_files
 
-        img_list = [x.strip() for x in raw_img_text.split(';') if x.strip()]
-
-        if not img_list or not secret_path:
+        if not img_list or not payload_path:
             QMessageBox.warning(app, "แจ้งเตือน", "กรุณาเลือกไฟล์ภาพ (อย่างน้อย 1 รูป) และไฟล์ลับให้ครบถ้วน")
             return
 
-        if not os.path.exists(secret_path):
-            QMessageBox.critical(app, "Error", f"หาไฟล์ลับไม่เจอ: {secret_path}")
+        if not os.path.exists(payload_path):
+            QMessageBox.critical(app, "Error", f"หาไฟล์ลับไม่เจอ: {payload_path}")
             return
 
         # --- CASE A: Single File (Modified for Fragmentation) ---
@@ -142,7 +139,7 @@ class StegoLogic:
             if save_path:
                 try:
                     # 1. อ่านไฟล์ลับเข้า RAM
-                    with open(secret_path, 'rb') as f:
+                    with open(payload_path, 'rb') as f:
                         secret_data = f.read()
                     
                     # 2. ทำ Fragmentation (หั่นแบบไม่มีขยะ)
@@ -167,7 +164,7 @@ class StegoLogic:
                 return
 
             try:
-                with open(secret_path, 'rb') as f:
+                with open(payload_path, 'rb') as f:
                     secret_data = f.read()
                 
                 total_size = len(secret_data)

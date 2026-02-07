@@ -1,4 +1,5 @@
 # PYQT6 FRAMEWORK (GUI)
+import shutil
 import os
 from PyQt6.QtCore import (
     Qt, QTimer, QSize, pyqtSignal, QMimeData, QThread
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
 
 from app.core.stego.lsb_plus.engine.noise_predictor import adjust_capacity_for_pixel
 from app.core.stego.lsb_plus.engine.pixel_order import build_pixel_order
+from app.ui.components.loco_file import LocoFileTile
 
 try:
     from PIL import Image
@@ -40,6 +42,7 @@ except ImportError:
     
 from app.core.stego.lsb_plus.engine.embedding import calculate_exact_capacity
 from app.core.stego.lsb_plus.lsbpp import LSBPP
+from app.core.stego.locomotive.locomotive import Locomotive
 from app.utils.file_io import format_file_size
 from app.utils.gui_helpers import disconnect_signal_safely
 
@@ -143,11 +146,6 @@ class CapacityWorker(QThread):
                 adjust_capacity_for_pixel, 
                 w
             )
-            
-            # --- DEBUG LOG ---
-            # ดูค่านี้ใน Terminal ว่าได้เท่าไหร่? (ควรจะได้ประมาณ 644 bits สำหรับภาพ 2004.png)
-            print(f"[DEBUG] Total Bits Found: {total_bits}") 
-            # -----------------
 
             raw_bytes = int(total_bits // 8)
             
@@ -167,41 +165,58 @@ class CapacityWorker(QThread):
             self.finished_signal.emit(0, 0)
 
 class EmbedWorker(QThread):
-
+    # Signal ส่งผลลัพธ์กลับ (Result, Metrics)
+    # LSB: Result=RGB Array, Metrics=Object
+    # Locomotive: Result=Output Path, Metrics=None (หรือตาม Engine ส่งมา)
     finished_signal = pyqtSignal(object, object)
     error_signal = pyqtSignal(str)
-    
     progress_signal = pyqtSignal(str, int) 
 
-    def __init__(self, engine, cover_path, payload_data, mode_str, pwd, pub_key):
+    def __init__(self, engine, cover_source, payload_source, mode_str, pwd, pub_key, on_tech):
         super().__init__()
         self.engine = engine
-        self.cover_path = cover_path
-        self.payload_data = payload_data
+        self.cover_source = cover_source     # LSB: str (Path) | Locomotive: list (Paths)
+        self.payload_source = payload_source # LSB: str (Text Data) | Locomotive: str (File Path)
         self.mode_str = mode_str
         self.pwd = pwd
         self.pub_key = pub_key
+        self.on_tech = on_tech               # 'LSB' or 'Locomotive'
 
     def run(self):
         """Background Thread"""
         try:
+            # Callback สำหรับส่ง Progress กลับไปที่ UI
             def worker_callback(text, percent):
                 self.progress_signal.emit(text, percent)
-
-            stego_rgb, metrics = self.engine.embed(
-                cover_path=self.cover_path,
-                payload_text=self.payload_data,
-                encrypt_mode=self.mode_str,
-                password=self.pwd,
-                public_key_path=self.pub_key,
-                status_callback=worker_callback
-            )
-            
-            self.finished_signal.emit(stego_rgb, metrics)
-            
+                
+            if self.on_tech == 'LSB':
+                # ... (ส่วน LSB เหมือนเดิม ถูกแล้ว) ...
+                stego_rgb, metrics = self.engine.embed(
+                    cover_path=self.cover_source,
+                    payload_text=self.payload_source, 
+                    encrypt_mode=self.mode_str,
+                    password=self.pwd,
+                    public_key_path=self.pub_key,
+                    status_callback=worker_callback
+                )
+                self.finished_signal.emit(stego_rgb, metrics)
+                
+            elif self.on_tech == 'Locomotive':
+                # === [FIXED] Locomotive Logic ===
+                result = self.engine.embed(
+                    cover_paths=self.cover_source,    # แก้ชื่อเป็น cover_paths (ตาม Engine)
+                    payload_path=self.payload_source, # แก้ชื่อเป็น payload_path (ตาม Engine)
+                    encrypt_mode=self.mode_str,       # ส่งโหมดเข้ารหัส
+                    password=self.pwd,                # ส่งรหัสผ่าน
+                    public_key_path=self.pub_key,     # ส่ง Public Key
+                    status_callback=worker_callback   # ส่ง Callback เพื่อให้หลอดโหลดขยับ!
+                )
+                
+                # Locomotive ส่งค่ากลับมาเป็น Path (String) ไม่ใช่ Image Array
+                self.finished_signal.emit(result, None)
+                
         except Exception as e:
             self.error_signal.emit(str(e))
-            
 # ============================================================================
 # CUSTOM WIDGETS
 # ============================================================================
@@ -256,6 +271,7 @@ class EmbedTab(QWidget):
     def __init__(self):
        super().__init__()
        
+       self.locomotive_files = []
        self.original_preview_pixmaps = {}  # Store original pixmaps for scaling
        self._init_ui()
        
@@ -281,51 +297,279 @@ class EmbedTab(QWidget):
         is_locomotive = "Locomotive" in current_tech
         is_metadata = "Metadata" in current_tech
         
+        self.reset_inputs()
+        
         disconnect_signal_safely(self.carrier_browse_btn.clicked)
         
         if is_LSBPP:
-            self.carrier_browse_btn.clicked.connect(self.browse_single_image)     
+            self._switch_to_standalone_mode()
+            self.carrier_browse_btn.clicked.connect(self.browse_LSB_Cover_file)     
+        elif is_locomotive:
+            self._switch_to_locomotive_mode()
+            self.carrier_browse_btn.clicked.connect(self.browse_locomotive_files)
+    
+    def reset_inputs(self):
+        """
+        Resets all inputs, preview, stats, and internal state to default.
+        Called when technique changes or manual reset is needed.
+        """
+        
+        # 1. เคลียร์ตัวแปรเก็บข้อมูล (Data Variables)
+        self.current_image_path = None
+        self.locomotive_files = []
+        self.original_preview_pixmaps = None  # ล้าง Cache ภาพต้นฉบับ
+        self.limit_safe = 0
+        self.limit_max = 0
+
+        # 2. หยุด Worker คำนวณความจุที่อาจรันค้างอยู่
+        if hasattr(self, 'cap_worker') and self.cap_worker.isRunning():
+            self.cap_worker.terminate()
+            self.cap_worker.wait()
+
+        # 3. รีเซ็ตช่องเลือกภาพ (Carrier Input)
+        if hasattr(self, 'carrier_edit'):
+            self.carrier_edit.clear()
+
+        # 4. รีเซ็ตส่วน Payload (Payload Inputs)
+        if hasattr(self, 'payload_text'):
+            self.payload_text.clear()
+        
+        if hasattr(self, 'payload_file_path'):
+            self.payload_file_path.clear()
             
+        if hasattr(self, 'attachment_widget'):
+            try:
+                self.attachment_widget.set_file(None) 
+            except Exception:
+                pass
+        
+        if hasattr(self, 'payload_tabs'):
+            self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
+
+        # [IMPROVED] 5. ตัดส่วนรีเซ็ต Encryption ออก
+        # เพื่อให้ Password/Public Key ยังคงอยู่เมื่อสลับโหมด
+        # (ไม่ต้อง clear self.passphrase, self.public_key_edit)
+
+        # 6. รีเซ็ตภาพพรีวิว (Reset Preview Area)
+        if hasattr(self, 'preview_label'):
+            self.preview_label.clear()
+            self.preview_label.setText("No Image Selected\n\nSelect PNG image from left panel\nor drag & drop PNG file here")
+            self.preview_label.setStyleSheet("""
+                QLabel {
+                    border: 2px dashed #555;
+                    background-color: #222;
+                    color: #888;
+                    font-size: 10pt;
+                }
+            """)
+            
+        # 7. รีเซ็ตค่าสถิติและความจุ (Reset Stats & Capacity)
+        if hasattr(self, '_update_stats'):
+            self._update_stats(None)
+        
+        if hasattr(self, 'lbl_capacity'):
+            self.lbl_capacity.setText("Size: 0 B")
+            self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
+            self.lbl_capacity.setToolTip("")
+
+        # 8. รีเซ็ตรายการ Locomotive
+        if hasattr(self, '_update_locomotive_ui_state'):
+            self._update_locomotive_ui_state()
+        if hasattr(self, '_update_locomotive_list'):
+            self._update_locomotive_list()
+
+        # [IMPROVED] 9. รีเซ็ตปุ่มและสถานะการทำงาน (Reset Execution State)
+        # แก้ปัญหา: สั่งรีเซ็ตปุ่มของทั้ง 2 โหมดโดยตรง เพื่อป้องกันปัญหาตัวแปรทับซ้อน
+        
+        # 9.1 Reset Standalone Controls (LSB++)
+        if hasattr(self, 'std_btn_savestg'):
+            self.std_btn_savestg.hide()
+            self.std_btn_savestg.setEnabled(False)
+        if hasattr(self, 'std_btn_exec'):
+            self.std_btn_exec.setEnabled(True)
+        if hasattr(self, 'std_progress_bar'):
+            self.std_progress_bar.setValue(0)
+        if hasattr(self, 'std_status_label'):
+            self.std_status_label.setText("Ready.")
+
+        # 9.2 Reset Locomotive Controls
+        if hasattr(self, 'loco_btn_savestg'):
+            self.loco_btn_savestg.hide()
+            self.loco_btn_savestg.setEnabled(False)
+        if hasattr(self, 'loco_btn_exec'):
+            self.loco_btn_exec.setEnabled(True)
+        if hasattr(self, 'loco_progress_bar'):
+            self.loco_progress_bar.setValue(0)
+        if hasattr(self, 'loco_status_label'):
+            self.loco_status_label.setText("Ready.")
+          
+          
+    def _update_locomotive_ui_state(self):
+        count = len(self.locomotive_files)
+        if count > 0:
+            self.carrier_edit.setText(f"{count} files selected")
+        else:
+            self.carrier_edit.clear()
+            self.carrier_edit.setPlaceholderText("Select multiple PNG images...")
+        
+        if self.loco_group_box:
+            self.loco_group_box.setTitle(f"Selected Files ({count} fragments)")
+    
+    def remove_specific_file(self, file_path):
+        """Remove a specific file from the locomotive list (called by Tile X button)."""
+        if file_path in self.locomotive_files:
+            self.locomotive_files.remove(file_path)
+            # Refresh list to remove the item visually
+            self._update_locomotive_list()
+            self._update_locomotive_ui_state()
+            
+    def _add_locomotive_file(self, file_path):
+        # Create Tiles
+        tile = LocoFileTile(file_path)
+        
+        # Connect delete signals
+        tile.deleteRequested.connect(self.remove_specific_file)
+
+        # Add to Standalone List
+        item = QListWidgetItem(self.loco_list_widget)
+        item.setSizeHint(QSize(120, 150))
+        self.loco_list_widget.addItem(item)
+        self.loco_list_widget.setItemWidget(item, tile)
+        
+            
+    def _update_locomotive_list(self):
+        self.loco_list_widget.clear()
+        
+        for file_path in self.locomotive_files:
+            self._add_locomotive_file(file_path)
+                         
+    def browse_locomotive_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Multiple PNG Carriers", "", "PNG Images (*.png)"
+        )
+        if files:
+            print(files)
+            self.locomotive_files = files
+            self._update_locomotive_ui_state()
+            self._update_locomotive_list()
+            
+    def browse_locomotive_files_append(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Add PNG Carriers", "", "PNG Images (*.png)"
+        )
+        if files:
+            new_files = [f for f in files if f not in self.locomotive_files]
+            if new_files:
+                self.locomotive_files.extend(new_files)
+                self._update_locomotive_ui_state()
+                self._update_locomotive_list()
+            
+    def _switch_to_locomotive_mode(self):
+        """Switch UI to Locomotive Mode (Multiple Images, All File Types)"""
+        # 1. Switch Right Panel
+        self.right_panel_stack.setCurrentIndex(PAGE_LOCOMOTIVE)
+        
+        # 2. Configure Carrier Input (Multiple)
+        self.carrier_edit.setPlaceholderText("Select multiple PNG images...")
+        
+        # 3. Configure Payload Input (Force File Tab)
+        self.payload_tabs.setCurrentIndex(TAB_INDEX_FILE)
+        
+        # 4. Configure Attachment Widget (Allow ALL files)
+        self.attachment_widget.set_allowed_extensions(None) 
+        self.attachment_widget.empty_label.setText("Drag & Drop\n(All file types)")
+        
+        # 5. Reset Standalone View (if exists)
+        if hasattr(self, 'standalone_content_stack'):
+            self.standalone_content_stack.setCurrentIndex(0)
+
+    def _switch_to_standalone_mode(self):
+        """Switch UI to Standalone Mode (Single Image, Text/Code Files)"""
+        # 1. Switch Right Panel
+        self.right_panel_stack.setCurrentIndex(PAGE_STANDALONE)
+        
+        # 2. Configure Carrier Input (Single)
+        self.carrier_edit.setPlaceholderText("Select PNG image...")
+        
+        # 3. Configure Payload Input (Default to Text Tab)
+        self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
+        
+        # 4. Configure Attachment Widget (Restrict to Text/Code files)
+        # ใช้ตัวแปร TEXT_FILE_EXTENSIONS ที่ประกาศไว้ข้างบน
+        self.attachment_widget.set_allowed_extensions(TEXT_FILE_EXTENSIONS)
+        self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files only: .txt, .md, .csv, ...)")
+        
+        # 5. Reset Standalone View (if exists)
+        if hasattr(self, 'standalone_content_stack'):
+            self.standalone_content_stack.setCurrentIndex(0)
 
     def _on_run_embed(self):
         """
         Main execution handler:
-        1. Validates inputs.
+        1. Validates inputs based on selected technique.
         2. Prepares data (UI -> Variables).
         3. Starts the Background Worker Thread.
         """
         
-        if not hasattr(self, 'current_image_path') or not self.current_image_path:
-            QMessageBox.warning(self, "Missing Input", "Please select a carrier image first!")
-            return
-
-        current_tab_index = self.payload_tabs.currentIndex()
-        payload_data = None
+        # [STEP 0] ดึง UI ที่ถูกต้อง (std หรือ loco) เพื่อสั่งงานปุ่มและหลอดโหลด
+        ui = self._get_active_ui()
         
-        if current_tab_index == TAB_INDEX_TEXT:
-            # Text Mode
-            text_content = self.payload_text.toPlainText()
-            if not text_content:
-                QMessageBox.warning(self, "Missing Input", "Please enter a message to embed!")
+        # ตรวจสอบเทคนิคที่เลือก
+        current_tech = self.tech_combo.currentText()
+        is_LSBPP = "LSB++" in current_tech
+        is_locomotive = "Locomotive" in current_tech
+        
+        # [STEP 1] Validate Cover Source
+        if is_LSBPP:
+            if not hasattr(self, 'current_image_path') or not self.current_image_path:
+                QMessageBox.warning(self, "Missing Input", "Please select a carrier image first!")
                 return
-            payload_data = text_content # ส่งเป็น String
+        elif is_locomotive:
+            if not hasattr(self, 'locomotive_files') or not self.locomotive_files:
+                QMessageBox.warning(self, "Missing Input", "Please select at least one PNG carrier image!")
+                return
+
+        # [STEP 2] Prepare Payload
+        current_tab_index = self.payload_tabs.currentIndex()
+        payload_data = None # สำหรับ LSB (ส่งข้อมูลเป็น Text/Bytes)
+        payload_path = None # สำหรับ Locomotive (ส่งข้อมูลเป็น Path ไฟล์)
+        
+        if is_locomotive:
+            # Locomotive: บังคับใช้ File Attachment เท่านั้น
+            if current_tab_index != TAB_INDEX_FILE:
+                 QMessageBox.warning(self, "Input Error", "Locomotive technique requires a file payload (File Attachment tab).")
+                 return
             
-        elif current_tab_index == TAB_INDEX_FILE:
-            # File Mode
-            file_path = self.payload_file_path.text()
-            if not file_path or not os.path.exists(file_path):
+            payload_path = self.payload_file_path.text()
+            if not payload_path or not os.path.exists(payload_path):
                 QMessageBox.warning(self, "Missing Input", "Please select a valid payload file!")
                 return
-            
-            try:
-                # หมายเหตุ: ถ้า LSBPP รองรับ bytes ให้ใช้ 'rb' 
-                # แต่ถ้ายังเป็น version รับ string ให้ใช้ 'r' (utf-8)
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    payload_data = f.read()
-            except Exception as e:
-                QMessageBox.critical(self, "File Error", f"Could not read payload file:\n{str(e)}")
-                return
-            
+        
+        else: # LSB++
+            if current_tab_index == TAB_INDEX_TEXT:
+                # Text Mode
+                text_content = self.payload_text.toPlainText()
+                if not text_content:
+                    QMessageBox.warning(self, "Missing Input", "Please enter a message to embed!")
+                    return
+                payload_data = text_content 
+                
+            elif current_tab_index == TAB_INDEX_FILE:
+                # File Mode (สำหรับ LSB ต้องอ่านเนื้อไฟล์ออกมา)
+                file_path = self.payload_file_path.text()
+                if not file_path or not os.path.exists(file_path):
+                    QMessageBox.warning(self, "Missing Input", "Please select a valid payload file!")
+                    return
+                
+                try:
+                    # อ่านไฟล์เป็น utf-8 string
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        payload_data = f.read()
+                except Exception as e:
+                    QMessageBox.critical(self, "File Error", f"Could not read payload file:\n{str(e)}")
+                    return
+
+        # [STEP 3] Prepare Encryption Config
         enc_mode_idx = self.enc_combo.currentIndex()
         is_encrypted = self.encryption_box.isChecked()
         
@@ -353,78 +597,109 @@ class EmbedTab(QWidget):
                     QMessageBox.warning(self, "Missing Input", "Please select a valid Public Key file (.pem)!")
                     return
 
-        self.btn_exec.setEnabled(False)
-        self.btn_savestg.setEnabled(False); self.btn_savestg.hide()
-        self.standalone_status_label.setText("Initializing...")
-        self.standalone_progress_bar.setRange(0, 100)
-        self.standalone_progress_bar.setValue(0)
+        # [STEP 4] Update UI State (Disable buttons, Show progress)
+        if ui['btn_exec']: 
+            ui['btn_exec'].setEnabled(False)
+            
+        if ui['btn_save']: 
+            ui['btn_save'].setEnabled(False)
+            ui['btn_save'].hide()
+            
+        if ui['status']: 
+            ui['status'].setText("Initializing...")
+            
+        if ui['progress']: 
+            ui['progress'].setRange(0, 100)
+            ui['progress'].setValue(0)
 
+        # [STEP 5] Start Worker
         try:
-            engine = LSBPP()
+            if is_LSBPP:
+                # กรณี LSB++: ส่ง Single Path + Text Data
+                engine = LSBPP()
+                self.worker = EmbedWorker(
+                    engine=engine,
+                    cover_source=self.current_image_path,  # String
+                    payload_source=payload_data,           # String Content
+                    mode_str=mode_str,
+                    pwd=pwd,
+                    pub_key=pub_key_path,
+                    on_tech='LSB'
+                )
+            
+            elif is_locomotive:
+                engine = Locomotive()
+                self.worker = EmbedWorker(
+                    engine=engine,
+                    cover_source=self.locomotive_files,    # List
+                    payload_source=payload_path,           # String Path
+                    mode_str=mode_str,
+                    pwd=pwd,
+                    pub_key=pub_key_path,
+                    on_tech='Locomotive'
+                )
 
-            # สร้าง Worker (ส่งข้อมูลที่เตรียมไว้เข้าไป)
-            self.worker = EmbedWorker(
-                engine, 
-                self.current_image_path, 
-                payload_data, 
-                mode_str, 
-                pwd, 
-                pub_key_path
-            )
-            
-            # เชื่อมต่อ Signals (สั่งงานข้าม Thread)
-            self.worker.progress_signal.connect(self._update_progress_ui) # อัปเดตหลอดโหลด
-            self.worker.finished_signal.connect(self._on_embed_finished)  # ทำเสร็จแล้วไปหน้า Save
-            self.worker.error_signal.connect(self._on_embed_error)        # ถ้าพังให้แจ้งเตือน
-            
-            # ลบ Thread ทิ้งเมื่อจบงานเพื่อคืน Ram
+            # เชื่อมต่อ Signals
+            self.worker.progress_signal.connect(self._update_progress_ui) 
+            self.worker.finished_signal.connect(self._on_embed_finished)
+            self.worker.error_signal.connect(self._on_embed_error)
             self.worker.finished.connect(self.worker.deleteLater)
 
             self.worker.start()
 
         except Exception as e:
-            # กรณีพังตั้งแต่ตอนสร้าง Worker (ยังไม่ได้รัน)
+            # กรณี Error ตั้งแต่ยังไม่เริ่ม Thread
             self._on_embed_error(str(e))
             
     # ฟังก์ชันรับค่า Update จาก Worker มาแสดงผลบนจอ
     def _update_progress_ui(self, text, percent):
-        """ทำงานบน Main Thread: อัปเดตข้อความและ Progress Bar"""
-        self.standalone_status_label.setText(text)
-        self.standalone_progress_bar.setValue(percent)
+        ui = self._get_active_ui()
+        if ui['status']: ui['status'].setText(text)
+        if ui['progress']: ui['progress'].setValue(percent)
 
     # ฟังก์ชันจบงาน (Success Handling)
-    def _on_embed_finished(self, stego_rgb, metrics):
-        """ทำงานเมื่อ Worker ประมวลผลเสร็จสิ้น"""
+    def _on_embed_finished(self, result_data, metrics):
+        """
+        ทำงานเมื่อ Worker เสร็จสิ้น
+        result_data: 
+          - กรณี LSB++: จะเป็น Image Array (numpy array)
+          - กรณี Locomotive: จะเป็น Path String (ที่อยู่ไฟล์/โฟลเดอร์)
+        """
+        ui = self._get_active_ui()
         
-        self.standalone_progress_bar.setValue(100)
-        self.standalone_status_label.setText("Processing Complete.")
-        self.btn_exec.setEnabled(True)
-        self.btn_savestg.setEnabled(True)
+        # 1. อัปเดตสถานะหน้าจอ
+        if ui['progress']: ui['progress'].setValue(100)
+        if ui['status']: ui['status'].setText("Processing Complete.")
+        if ui['btn_exec']: ui['btn_exec'].setEnabled(True)
         
-        self.btn_savestg.show()
-        self.btn_savestg.setEnabled(True)
-        
-        try:
-            self.btn_savestg.clicked.disconnect()
-        except TypeError:
-            pass
-        
-        self.btn_savestg.clicked.connect(
-            lambda: self._on_save_stego(stego_rgb, metrics)
-        )
+        # 2. จัดการปุ่ม Save
+        if ui['btn_save']:
+            ui['btn_save'].setEnabled(True)
+            ui['btn_save'].show()
+            
+            # [สำคัญ] ยกเลิกการเชื่อมต่อเก่าก่อน (Disconnect) 
+            # เพื่อป้องกันการกดปุ่ม 1 ครั้งแต่ทำงานซ้ำหลายรอบ (Multiple slots)
+            try:
+                ui['btn_save'].clicked.disconnect()
+            except TypeError:
+                pass # ถ้ายังไม่เคย Connect ก็ข้ามไป
+            
+            # 3. เชื่อมต่อปุ่ม Save เข้ากับข้อมูลผลลัพธ์ใหม่
+            ui['btn_save'].clicked.connect(
+                lambda: self._on_save_stego(result_data, metrics)
+            )
         
 
     # ฟังก์ชันจัดการ Error
     def _on_embed_error(self, error_msg):
-        """ทำงานเมื่อ Worker ส่ง Error กลับมา"""
-        self.standalone_status_label.setText("Error occurred.")
-        self.standalone_progress_bar.setValue(0)
-        self.btn_exec.setEnabled(True)
+        ui = self._get_active_ui()
+        if ui['status']: ui['status'].setText("Error occurred.")
+        if ui['progress']: ui['progress'].setValue(0)
+        if ui['btn_exec']: ui['btn_exec'].setEnabled(True)
         
         QMessageBox.critical(self, "Embedding Error", error_msg)
-
         
-    def browse_single_image(self):
+    def browse_LSB_Cover_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Carrier Image", "", "PNG Images (*.png)"
         )
@@ -437,6 +712,7 @@ class EmbedTab(QWidget):
             self.update_capacity_indicator()
             
             self._start_capacity_calculation(file_path)
+            
             
     def _update_payload_size(self):
         return len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
@@ -1026,10 +1302,90 @@ class EmbedTab(QWidget):
     def _create_right_panel(self):
         stack = QStackedWidget()
         stack.addWidget(self._create_standalone_page())
-        # stack.addWidget(self._create_locomotive_page())
+        stack.addWidget(self._create_locomotive_page())
         # stack.addWidget(self._create_configurable_page())
         return stack
     
+    def _create_locomotive_list_widget(self):
+        widget = QListWidget()
+        widget.setViewMode(QListWidget.ViewMode.IconMode)
+        widget.setResizeMode(QListWidget.ResizeMode.Adjust)
+        widget.setMovement(QListWidget.Movement.Static)
+        widget.setFlow(QListWidget.Flow.LeftToRight)
+        widget.setWrapping(True)
+        widget.setSpacing(12)
+        widget.setGridSize(QSize(130, 160))
+        widget.setStyleSheet(LOCO_LIST_STYLE)
+        return widget
+    
+    def _create_locomotive_button_row(self):
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        
+        btn_add = QPushButton("+ Add Files")
+        btn_add.clicked.connect(self.browse_locomotive_files_append)
+        
+        btn_del = QPushButton("Delete Selected")
+        # btn_del.clicked.connect(self.delete_selected_locomotive_files)
+        
+        btn_clear = QPushButton("Clear All")
+        # btn_clear.clicked.connect(self.clear_locomotive_files)
+        
+        btn_row.addWidget(btn_add)
+        btn_row.addWidget(btn_del)
+        btn_row.addWidget(btn_clear)
+        btn_row.addStretch()
+        return btn_row
+    
+    def _build_locomotive_list_section(self, mode):
+        title = f"Selected Files ({len(self.locomotive_files)} fragments)"
+        
+        loco_group_box = QGroupBox(title)
+        self.loco_group_box = loco_group_box
+        
+        loco_group_box.setMinimumHeight(200)
+            
+        layout = QVBoxLayout()
+        layout.setContentsMargins(6, 12, 6, 6)
+        layout.setSpacing(6)
+
+        loco_list_widget = self._create_locomotive_list_widget()
+        loco_list_widget.setMinimumHeight(150)
+        
+        self.loco_list_widget = loco_list_widget
+            
+        layout.addWidget(loco_list_widget, 1)
+        
+        # Add control buttons for both standalone and configurable modes
+        btn_row = self._create_locomotive_button_row()
+        layout.addLayout(btn_row, 0)
+        
+        loco_group_box.setLayout(layout)
+        return loco_group_box
+    
+    def _create_locomotive_page(self):
+        page = QWidget()
+        page.setMinimumSize(400, 400)
+        
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+        
+        # Scroll area for locomotive list to prevent overflow
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        
+        self.loco_list_box = self._build_locomotive_list_section("std")
+        scroll_area.setWidget(self.loco_list_box)
+        
+        layout.addWidget(scroll_area, 1)
+        layout.addWidget(self._build_execution_group("Execute Locomotive Embedding", "loco"), 0)
+        return page
+
+
     # Components(Groupbox) of right panel
     def _create_standalone_page(self):
         page = QWidget()
@@ -1059,7 +1415,7 @@ class EmbedTab(QWidget):
         scroll_area.setWidget(content_widget)
         
         layout.addWidget(scroll_area, 1)
-        layout.addWidget(self._build_execution_group("Embed Data"), 0)
+        layout.addWidget(self._build_execution_group("Embed Data", "std"), 0)
         return page
     
     def _build_preview_section_with_stats(self):
@@ -1176,7 +1532,7 @@ class EmbedTab(QWidget):
             lbl_name.setText("None")
             lbl_name.setToolTip("")
             
-    def _build_execution_group(self, button_text):
+    def _build_execution_group(self, button_text, prefix): # <--- เพิ่ม parameter prefix
         container = QWidget()
         container.setMinimumHeight(60)
         container.setMaximumHeight(80)
@@ -1185,88 +1541,143 @@ class EmbedTab(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
         
-        self.btn_exec = QPushButton(button_text)
-        self.btn_exec.setMinimumHeight(35)
-        self.btn_exec.setStyleSheet(
+        # สร้างปุ่มและตั้งชื่อตัวแปรแบบ Dynamic ตาม prefix
+        btn_exec = QPushButton(button_text)
+        btn_exec.setMinimumHeight(35)
+        btn_exec.setStyleSheet(
             "font-weight: bold; font-size: 11pt; "
             "background-color: #2d5a75; border-radius: 4px; color: white;"
         )
+        setattr(self, f"{prefix}_btn_exec", btn_exec) # เก็บลงตัวแปร self.std_btn_exec หรือ self.loco_btn_exec
         
-        self.btn_savestg = QPushButton("Save stego")
-        self.btn_savestg.setMinimumHeight(35)
-        self.btn_savestg.setStyleSheet(
+        btn_savestg = QPushButton("Save stego")
+        btn_savestg.setMinimumHeight(35)
+        btn_savestg.setStyleSheet(
             "font-weight: bold; font-size: 11pt; "
             "background-color: #888; border-radius: 4px; color: white;"
         )
-        self.btn_savestg.setEnabled(False)
-        self.btn_savestg.hide()
+        btn_savestg.setEnabled(False)
+        btn_savestg.hide()
+        setattr(self, f"{prefix}_btn_savestg", btn_savestg)
         
-        # Progress Bar for Standalone/Locomotive modes
-        self.standalone_progress_bar = QProgressBar()
-        self.standalone_progress_bar.setValue(0)
-        self.standalone_progress_bar.setTextVisible(False)
-        self.standalone_progress_bar.setFixedHeight(6)
+        # Progress Bar
+        progress_bar = QProgressBar()
+        progress_bar.setValue(0)
+        progress_bar.setTextVisible(False)
+        progress_bar.setFixedHeight(6)
+        setattr(self, f"{prefix}_progress_bar", progress_bar)
         
-        # Status Label for Standalone/Locomotive modes
-        self.standalone_status_label = QLabel("Ready.")
-        self.standalone_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.standalone_status_label.setStyleSheet("color: #888; font-size: 9pt;")
+        # Status Label
+        status_label = QLabel("Ready.")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_label.setStyleSheet("color: #888; font-size: 9pt;")
+        setattr(self, f"{prefix}_status_label", status_label)
         
-        # Initial visibility check based on current mode
-        # is_configurable = self.mode_combo.currentText() == "Configurable Model"
-        # self.standalone_progress_bar.setVisible(not is_configurable)
-        # self.standalone_status_label.setVisible(not is_configurable)
-
-        self.btn_exec.clicked.connect(
-            lambda: self._on_run_embed()
-        )
+        # Connect Signal
+        btn_exec.clicked.connect(lambda: self._on_run_embed())
         
-        # 2. สร้าง Layout แนวนอนสำหรับปุ่ม
+        # Layout
         hlayout = QHBoxLayout() 
         hlayout.setSpacing(10)
-        hlayout.addWidget(self.btn_exec)
-        hlayout.addWidget(self.btn_savestg)
+        hlayout.addWidget(btn_exec)
+        hlayout.addWidget(btn_savestg)
 
-        # 3. ยัด Layout ปุ่ม ลงใน Layout หลัก
         layout.addLayout(hlayout)
-        layout.addWidget(self.standalone_progress_bar)
-        layout.addWidget(self.standalone_status_label)
+        layout.addWidget(progress_bar)
+        layout.addWidget(status_label)
         
         return container
     
-    def _on_save_stego(self, stego_rgb, metrics):
+    def _on_save_stego(self, stego_data, metrics):
+        """
+        ฟังก์ชันบันทึกผลลัพธ์ (รองรับทั้ง LSB++ และ Locomotive)
+        """
+        ui = self._get_active_ui()
+        
         try:
-            orig_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
-            default_save_name = f"{orig_name}_stego.png"
-            
-            save_path, _ = QFileDialog.getSaveFileName(
-                self, 
-                "Save Stego Image", 
-                default_save_name, 
-                "PNG Images (*.png)"
-            )
-
-            if save_path:
-                if Image: 
-                    # แปลง Array กลับเป็นรูปแล้วบันทึก
-                    final_image = Image.fromarray(stego_rgb)
-                    final_image.save(save_path)
-
-                    # แสดงผลลัพธ์
-                    info_msg = (
-                        f"Embedding Completed Successfully!\n\n"
-                        f"--- Quality Metrics ---\n"
-                        f"PSNR: {metrics.psnr:.2f} dB\n"
-                        f"SSIM: {metrics.ssim:.4f}\n"
-                        f"Drift: {metrics.hist_drift:.4f}\n"
-                        f"Saved to: {save_path}"
+            # =========================================================
+            # CASE A: Locomotive (ข้อมูลที่ส่งมาเป็น String Path)
+            # =========================================================
+            if isinstance(stego_data, str):
+                src_path = stego_data
+                
+                # กรณี 1: เป็นไฟล์เดียว (Fragmentation Mode)
+                if os.path.isfile(src_path):
+                    default_name = os.path.basename(src_path)
+                    save_path, _ = QFileDialog.getSaveFileName(
+                        self, "Save Stego File", default_name, "PNG Images (*.png)"
                     )
-                    QMessageBox.information(self, "Success", info_msg)
-                    self.standalone_status_label.setText("Saved successfully.")
-                else:
-                    QMessageBox.critical(self, "Error", "PIL library missing.")
+                    
+                    if save_path:
+                        shutil.copy2(src_path, save_path) # ใช้ shutil ก๊อปปี้ไฟล์
+                        
+                        QMessageBox.information(self, "Success", f"File saved to:\n{save_path}")
+                        if ui['status']: ui['status'].setText("Saved successfully.")
+                    else:
+                        if ui['status']: ui['status'].setText("Save cancelled.")
+                        
+                # กรณี 2: เป็นโฟลเดอร์ (Sharding Mode - หลายรูป)
+                elif os.path.isdir(src_path):
+                    save_dir = QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+                    
+                    if save_dir:
+                        dir_name = os.path.basename(src_path)
+                        target_path = os.path.join(save_dir, dir_name)
+                        
+                        # ถ้ามีโฟลเดอร์ชื่อซ้ำ ให้ลบของเก่าก่อน
+                        if os.path.exists(target_path):
+                            shutil.rmtree(target_path)
+                             
+                        shutil.copytree(src_path, target_path) # ก๊อปปี้ทั้งโฟลเดอร์
+                        
+                        QMessageBox.information(self, "Success", f"Output folder saved to:\n{target_path}")
+                        if ui['status']: ui['status'].setText("Saved successfully.")
+                    else:
+                        if ui['status']: ui['status'].setText("Save cancelled.")
+
+            # =========================================================
+            # CASE B: LSB++ (ข้อมูลที่ส่งมาเป็น Numpy Array รูปภาพ)
+            # =========================================================
             else:
-                self.standalone_status_label.setText("Save cancelled.")
+                # ตั้งชื่อไฟล์ Default
+                if self.current_image_path:
+                    orig_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
+                    default_save_name = f"{orig_name}_stego.png"
+                else:
+                    default_save_name = "stego_image.png"
+                
+                save_path, _ = QFileDialog.getSaveFileName(
+                    self, 
+                    "Save Stego Image", 
+                    default_save_name, 
+                    "PNG Images (*.png)"
+                )
+
+                if save_path:
+                    if Image: 
+                        # แปลง Array กลับเป็นรูปแล้วบันทึก
+                        final_image = Image.fromarray(stego_data)
+                        final_image.save(save_path)
+
+                        # สร้างข้อความแสดงผล Metrics (ถ้ามี)
+                        info_msg = "Embedding Completed Successfully!\n\n"
+                        if metrics:
+                            info_msg += (
+                                f"--- Quality Metrics ---\n"
+                                f"PSNR: {metrics.psnr:.2f} dB\n"
+                                f"SSIM: {metrics.ssim:.4f}\n"
+                                f"Drift: {metrics.hist_drift:.4f}\n"
+                            )
+                        info_msg += f"Saved to: {save_path}"
+                        
+                        QMessageBox.information(self, "Success", info_msg)
+                        if ui['status']:
+                            ui['status'].setText("Saved successfully.")
+                    else:
+                        QMessageBox.critical(self, "Error", "PIL library missing.")
+                else:
+                    if ui['status']:
+                        ui['status'].setText("Save cancelled.")
 
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Error during saving:\n{str(e)}")
@@ -1327,3 +1738,21 @@ class EmbedTab(QWidget):
         widget.value_label = value
         
         return widget
+    
+    def _get_active_ui(self):
+        """Helper เพื่อดึง widget ควบคุมของหน้าที่ active อยู่"""
+        if self.right_panel_stack.currentIndex() == PAGE_LOCOMOTIVE:
+            return {
+                'btn_exec': getattr(self, 'loco_btn_exec', None),
+                'btn_save': getattr(self, 'loco_btn_savestg', None),
+                'progress': getattr(self, 'loco_progress_bar', None),
+                'status': getattr(self, 'loco_status_label', None)
+            }
+        else:
+            # Default to Standalone (std)
+            return {
+                'btn_exec': getattr(self, 'std_btn_exec', None),
+                'btn_save': getattr(self, 'std_btn_savestg', None),
+                'progress': getattr(self, 'std_progress_bar', None),
+                'status': getattr(self, 'std_status_label', None)
+            }
