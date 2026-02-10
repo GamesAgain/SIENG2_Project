@@ -47,6 +47,8 @@ from app.utils.file_io import format_file_size
 from app.utils.gui_helpers import disconnect_signal_safely
 
 import numpy as np
+import uuid
+import json
 from app.core.stego.lsb_plus.engine.analyzer.capacity import compute_capacity
 from app.core.stego.lsb_plus.engine.analyzer.texture_map import compute_texture_features
 
@@ -273,21 +275,24 @@ class EmbedTab(QWidget):
        
        self.locomotive_files = []
        self.original_preview_pixmaps = {}  # Store original pixmaps for scaling
-       self._init_ui()
+       # Configurable Editor: pipeline data (list of {id, technique, encrypted, display})
+       self.embed_pipeline = []
+       self.extract_pipeline = []
+       self.init_ui()
        
-    def _init_ui(self):
-        self.setMinimumSize(800, 500)
+    def init_ui(self):
+        self.setMinimumSize(1000, 700)
         
         main_layout = QHBoxLayout(self)
         main_layout.setSpacing(8)
         main_layout.setContentsMargins(8, 8, 8, 8)
         
-        left_panel = self._create_left_panel()
-        self.right_panel_stack = self._create_right_panel()
+        left_panel = self.create_left_panel()
+        right_panel = self.create_right_panel()
         
         #ratio: left panel gets 35%, right panel gets 65%
         main_layout.addWidget(left_panel, 35)
-        main_layout.addWidget(self.right_panel_stack, 65)
+        main_layout.addWidget(right_panel, 65)
         
         self.on_technique_changed()
                 
@@ -302,11 +307,30 @@ class EmbedTab(QWidget):
         disconnect_signal_safely(self.carrier_browse_btn.clicked)
         
         if is_LSBPP:
-            self._switch_to_standalone_mode()
+            self.switch_to_standalone_mode()
             self.carrier_browse_btn.clicked.connect(self.browse_LSB_Cover_file)     
         elif is_locomotive:
-            self._switch_to_locomotive_mode()
+            self.switch_to_locomotive_mode()
             self.carrier_browse_btn.clicked.connect(self.browse_locomotive_files)
+            
+    def on_mode_changed(self):
+        is_config = self.mode_combo.currentText() == "Configurable Model"
+
+        # Show/Hide Config Editor
+        if hasattr(self, "config_editor"):
+            self.config_editor.setVisible(is_config)
+
+        # Hide/Show Standalone (LSB++) Execution Group Container
+        if hasattr(self, "std_execution_container"):
+            self.std_execution_container.setVisible(not is_config)
+        
+        # Hide/Show Locomotive Execution Group Container
+        if hasattr(self, "loco_execution_container"):
+            self.loco_execution_container.setVisible(not is_config)
+
+        # ⭐ Force UI Refresh
+        self.on_technique_changed()
+
     
     def reset_inputs(self):
         """
@@ -464,10 +488,10 @@ class EmbedTab(QWidget):
                 self._update_locomotive_ui_state()
                 self._update_locomotive_list()
             
-    def _switch_to_locomotive_mode(self):
+    def switch_to_locomotive_mode(self):
         """Switch UI to Locomotive Mode (Multiple Images, All File Types)"""
         # 1. Switch Right Panel
-        self.right_panel_stack.setCurrentIndex(PAGE_LOCOMOTIVE)
+        self.preview_stack.setCurrentIndex(PAGE_LOCOMOTIVE)
         
         # 2. Configure Carrier Input (Multiple)
         self.carrier_edit.setPlaceholderText("Select multiple PNG images...")
@@ -483,10 +507,10 @@ class EmbedTab(QWidget):
         if hasattr(self, 'standalone_content_stack'):
             self.standalone_content_stack.setCurrentIndex(0)
 
-    def _switch_to_standalone_mode(self):
+    def switch_to_standalone_mode(self):
         """Switch UI to Standalone Mode (Single Image, Text/Code Files)"""
         # 1. Switch Right Panel
-        self.right_panel_stack.setCurrentIndex(PAGE_STANDALONE)
+        self.preview_stack.setCurrentIndex(PAGE_STANDALONE)
         
         # 2. Configure Carrier Input (Single)
         self.carrier_edit.setPlaceholderText("Select PNG image...")
@@ -503,7 +527,7 @@ class EmbedTab(QWidget):
         if hasattr(self, 'standalone_content_stack'):
             self.standalone_content_stack.setCurrentIndex(0)
 
-    def _on_run_embed(self):
+    def on_run_embed(self):
         """
         Main execution handler:
         1. Validates inputs based on selected technique.
@@ -512,7 +536,7 @@ class EmbedTab(QWidget):
         """
         
         # [STEP 0] ดึง UI ที่ถูกต้อง (std หรือ loco) เพื่อสั่งงานปุ่มและหลอดโหลด
-        ui = self._get_active_ui()
+        ui = self.get_active_ui()
         
         # ตรวจสอบเทคนิคที่เลือก
         current_tech = self.tech_combo.currentText()
@@ -611,7 +635,26 @@ class EmbedTab(QWidget):
         if ui['progress']: 
             ui['progress'].setRange(0, 100)
             ui['progress'].setValue(0)
-
+        
+        # Update Configurable Editor UI State (แยกตาม tab)
+        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+        if is_config:
+            # Initialize embed tab
+            if hasattr(self, 'cfg_embed_progress_bar'):
+                self.cfg_embed_progress_bar.setValue(0)
+            if hasattr(self, 'cfg_embed_status_label'):
+                self.cfg_embed_status_label.setText("Initializing...")
+            if hasattr(self, 'cfg_embed_btn_exec'):
+                self.cfg_embed_btn_exec.setEnabled(False)
+            
+            # Initialize extract tab
+            if hasattr(self, 'cfg_extract_progress_bar'):
+                self.cfg_extract_progress_bar.setValue(0)
+            if hasattr(self, 'cfg_extract_status_label'):
+                self.cfg_extract_status_label.setText("Initializing...")
+            if hasattr(self, 'cfg_extract_btn_exec'):
+                self.cfg_extract_btn_exec.setEnabled(False)
+            
         # [STEP 5] Start Worker
         try:
             if is_LSBPP:
@@ -640,37 +683,85 @@ class EmbedTab(QWidget):
                 )
 
             # เชื่อมต่อ Signals
-            self.worker.progress_signal.connect(self._update_progress_ui) 
-            self.worker.finished_signal.connect(self._on_embed_finished)
-            self.worker.error_signal.connect(self._on_embed_error)
+            self.worker.progress_signal.connect(self.update_progress_ui) 
+            self.worker.finished_signal.connect(self.on_embed_finished)
+            self.worker.error_signal.connect(self.on_embed_error)
             self.worker.finished.connect(self.worker.deleteLater)
 
             self.worker.start()
 
         except Exception as e:
             # กรณี Error ตั้งแต่ยังไม่เริ่ม Thread
-            self._on_embed_error(str(e))
+            self.on_embed_error(str(e))
             
     # ฟังก์ชันรับค่า Update จาก Worker มาแสดงผลบนจอ
-    def _update_progress_ui(self, text, percent):
-        ui = self._get_active_ui()
+    def update_progress_ui(self, text, percent):
+        ui = self.get_active_ui()
         if ui['status']: ui['status'].setText(text)
         if ui['progress']: ui['progress'].setValue(percent)
+        
+        # Update both tabs when in configurable mode
+        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+        if is_config:
+            if hasattr(self, 'cfg_embed_progress_bar'):
+                self.cfg_embed_progress_bar.setValue(percent)
+            if hasattr(self, 'cfg_embed_status_label'):
+                self.cfg_embed_status_label.setText(text)
+            if hasattr(self, 'cfg_extract_progress_bar'):
+                self.cfg_extract_progress_bar.setValue(percent)
+            if hasattr(self, 'cfg_extract_status_label'):
+                self.cfg_extract_status_label.setText(text)
+        
 
     # ฟังก์ชันจบงาน (Success Handling)
-    def _on_embed_finished(self, result_data, metrics):
+    def on_embed_finished(self, result_data, metrics):
         """
         ทำงานเมื่อ Worker เสร็จสิ้น
         result_data: 
           - กรณี LSB++: จะเป็น Image Array (numpy array)
           - กรณี Locomotive: จะเป็น Path String (ที่อยู่ไฟล์/โฟลเดอร์)
         """
-        ui = self._get_active_ui()
+        ui = self.get_active_ui()
         
         # 1. อัปเดตสถานะหน้าจอ
         if ui['progress']: ui['progress'].setValue(100)
         if ui['status']: ui['status'].setText("Processing Complete.")
         if ui['btn_exec']: ui['btn_exec'].setEnabled(True)
+        
+        #อัปเดตสถานะหน้าจอ Config page (แยกตาม tab)
+        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+        if is_config:
+            # Update embed tab
+            if hasattr(self, 'cfg_embed_progress_bar'):
+                self.cfg_embed_progress_bar.setValue(100)
+            if hasattr(self, 'cfg_embed_status_label'):
+                self.cfg_embed_status_label.setText("Processing Complete.")
+            if hasattr(self, 'cfg_embed_btn_exec'):
+                self.cfg_embed_btn_exec.setEnabled(True)
+            if hasattr(self, 'cfg_embed_btn_savestg'):
+                self.cfg_embed_btn_savestg.setEnabled(True)
+                self.cfg_embed_btn_savestg.show()
+                try: self.cfg_embed_btn_savestg.clicked.disconnect()
+                except TypeError: pass
+                self.cfg_embed_btn_savestg.clicked.connect(
+                    lambda: self.on_save_stego(result_data, metrics)
+                )
+            
+            # Update extract tab
+            if hasattr(self, 'cfg_extract_progress_bar'):
+                self.cfg_extract_progress_bar.setValue(100)
+            if hasattr(self, 'cfg_extract_status_label'):
+                self.cfg_extract_status_label.setText("Processing Complete.")
+            if hasattr(self, 'cfg_extract_btn_exec'):
+                self.cfg_extract_btn_exec.setEnabled(True)
+            if hasattr(self, 'cfg_extract_btn_savestg'):
+                self.cfg_extract_btn_savestg.setEnabled(True)
+                self.cfg_extract_btn_savestg.show()
+                try: self.cfg_extract_btn_savestg.clicked.disconnect()
+                except TypeError: pass
+                self.cfg_extract_btn_savestg.clicked.connect(
+                    lambda: self.on_save_stego(result_data, metrics)
+                )
         
         # 2. จัดการปุ่ม Save
         if ui['btn_save']:
@@ -686,16 +777,35 @@ class EmbedTab(QWidget):
             
             # 3. เชื่อมต่อปุ่ม Save เข้ากับข้อมูลผลลัพธ์ใหม่
             ui['btn_save'].clicked.connect(
-                lambda: self._on_save_stego(result_data, metrics)
+                lambda: self.on_save_stego(result_data, metrics)
             )
         
 
     # ฟังก์ชันจัดการ Error
-    def _on_embed_error(self, error_msg):
-        ui = self._get_active_ui()
+    def on_embed_error(self, error_msg):
+        ui = self.get_active_ui()
         if ui['status']: ui['status'].setText("Error occurred.")
         if ui['progress']: ui['progress'].setValue(0)
         if ui['btn_exec']: ui['btn_exec'].setEnabled(True)
+        
+        # Update Configurable Editor Error State (แยกตาม tab)
+        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+        if is_config:
+            # Update embed tab
+            if hasattr(self, 'cfg_embed_status_label'):
+                self.cfg_embed_status_label.setText("Error occurred.")
+            if hasattr(self, 'cfg_embed_progress_bar'):
+                self.cfg_embed_progress_bar.setValue(0)
+            if hasattr(self, 'cfg_embed_btn_exec'):
+                self.cfg_embed_btn_exec.setEnabled(True)
+            
+            # Update extract tab
+            if hasattr(self, 'cfg_extract_status_label'):
+                self.cfg_extract_status_label.setText("Error occurred.")
+            if hasattr(self, 'cfg_extract_progress_bar'):
+                self.cfg_extract_progress_bar.setValue(0)
+            if hasattr(self, 'cfg_extract_btn_exec'):
+                self.cfg_extract_btn_exec.setEnabled(True)
         
         QMessageBox.critical(self, "Embedding Error", error_msg)
         
@@ -752,7 +862,7 @@ class EmbedTab(QWidget):
         
         
             
-    def _create_left_panel(self):
+    def create_left_panel(self):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -768,19 +878,19 @@ class EmbedTab(QWidget):
         layout.setSpacing(6)
         layout.setContentsMargins(4, 4, 4, 4)
         
-        layout.addWidget(self._build_mode_section())
-        layout.addWidget(self._build_technique_section())
-        layout.addWidget(self._build_carrier_section())
-        layout.addWidget(self._build_payload_section(), 1)
-        layout.addWidget(self._build_encryption_section())
+        layout.addWidget(self.build_mode_section())
+        layout.addWidget(self.build_technique_section())
+        layout.addWidget(self.build_carrier_section())
+        layout.addWidget(self.build_payload_section(), 1)
+        layout.addWidget(self.build_encryption_section())
         layout.addStretch()
         
         scroll_area.setWidget(widget)
         return scroll_area
     
     # Components(Groupbox) of left panel
-    def _build_mode_section(self):
-        return self._create_combo_group("Mode Selection", [
+    def build_mode_section(self):
+        return self.create_combo_group("Mode Selection", [
             (
                 "Standalone", 
                 "Hide data using one specific method independently."
@@ -791,8 +901,8 @@ class EmbedTab(QWidget):
             )
         ], "mode_combo")
 
-    def _build_technique_section(self):
-        return self._create_combo_group("Technique Selection", [
+    def build_technique_section(self):
+        return self.create_combo_group("Technique Selection", [
             (
             "LSB++", 
             "Hides data in PNG pixels using an adaptive LSB algorithm with password-based distribution."
@@ -807,7 +917,7 @@ class EmbedTab(QWidget):
             )
         ], "tech_combo")
     
-    def _create_combo_group(self, title, items, attribute_name):
+    def create_combo_group(self, title, items, attribute_name):
         box = QGroupBox(title)
         box.setMinimumHeight(70)
         box.setMaximumHeight(85)
@@ -831,14 +941,20 @@ class EmbedTab(QWidget):
                 combo.setItemData(current_index, hint, Qt.ItemDataRole.ToolTipRole)
             
         setattr(self, attribute_name, combo)
-        combo.currentIndexChanged.connect(self.on_technique_changed)
+        # combo.currentIndexChanged.connect(self.on_technique_changed)
         
+        if attribute_name == "mode_combo":
+            combo.currentIndexChanged.connect(self.on_mode_changed)
+        else:
+            combo.currentIndexChanged.connect(self.on_technique_changed)
+
+
         layout.addWidget(combo)
         box.setLayout(layout)
         return box
         
-    def _build_carrier_section(self):
-            box = QGroupBox("Carrier Input")
+    def build_carrier_section(self):
+            box = QGroupBox("Select Carrier File")
             box.setMinimumHeight(75)
             box.setMaximumHeight(90)
             
@@ -858,7 +974,7 @@ class EmbedTab(QWidget):
             box.setLayout(layout)
             return box
     
-    def _build_payload_section(self):
+    def build_payload_section(self):
         box = QGroupBox("Payload Input")
         self.payload_main_group = box
         box.setMinimumHeight(200)
@@ -867,8 +983,8 @@ class EmbedTab(QWidget):
         layout.setSpacing(4)
         
         self.payload_stack = QStackedWidget()
-        self.payload_stack.addWidget(self._create_standard_payload_page())
-        # self.payload_stack.addWidget(self._create_metadata_payload_page())
+        self.payload_stack.addWidget(self.create_standard_payload_page())
+        # self.payload_stack.addWidget(self._create_metadata_preview_page())
         
         size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         size_policy.setVerticalStretch(1)
@@ -878,19 +994,19 @@ class EmbedTab(QWidget):
         box.setLayout(layout)
         return box
     
-    def _create_standard_payload_page(self):
+    def create_standard_payload_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         
         self.payload_tabs = QTabWidget()
-        self.payload_tabs.addTab(self._create_text_payload_tab(), "Text Message")
-        self.payload_tabs.addTab(self._create_file_payload_tab(), "File Attachment")
+        self.payload_tabs.addTab(self.create_text_payload_tab(), "Text Message")
+        self.payload_tabs.addTab(self.create_file_payload_tab(), "File Attachment")
         
         layout.addWidget(self.payload_tabs)
         return page
     
-    def _create_text_payload_tab(self):
+    def create_text_payload_tab(self):
             tab = QWidget()
             layout = QVBoxLayout(tab)
             layout.setContentsMargins(4, 4, 4, 4)
@@ -924,7 +1040,7 @@ class EmbedTab(QWidget):
             
             return tab
     
-    def _create_file_payload_tab(self):
+    def create_file_payload_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(5, 10, 5, 10)  # Balanced top/bottom spacing
@@ -935,7 +1051,7 @@ class EmbedTab(QWidget):
         self.payload_file_path.hide()
         
         self.attachment_widget = AttachmentDropWidget()
-        self.attachment_widget.fileSelected.connect(self._on_file_selected)
+        self.attachment_widget.fileSelected.connect(self.on_file_attach_selected)
         self.attachment_widget.fileCleared.connect(self.payload_file_path.clear)
 
         self.attachment_widget.requestBrowse.connect(self.browse_payload_file)
@@ -1055,7 +1171,7 @@ class EmbedTab(QWidget):
     # FILE SELECTION HANDLERS
     # ========================================================================
     
-    def _on_file_selected(self, file_path):
+    def on_file_attach_selected(self, file_path):
         """Handle file selection from drag-drop (called by signal from AttachmentDropWidget)"""
         # NOTE: This is ONLY called when user drags a file, NOT when browsing
         
@@ -1090,7 +1206,7 @@ class EmbedTab(QWidget):
                 except Exception as e:
                     print(f"Error reading file: {e}")
 
-    def _on_public_key_selected(self, file_path):
+    def on_public_key_selected(self, file_path):
         """Handler for when a public-key file is selected in the attachment widget."""
         self.public_key_edit.setText(file_path)
 
@@ -1161,7 +1277,7 @@ class EmbedTab(QWidget):
                     except Exception as e:
                         print(f"Error reading file: {e}")
                         
-    def _build_encryption_section(self):
+    def build_encryption_section(self):
         self.encryption_box = QGroupBox("Encryption Options")
         self.encryption_box.setCheckable(True)
         self.encryption_box.setChecked(True)
@@ -1181,14 +1297,14 @@ class EmbedTab(QWidget):
         self.enc_combo.setItemData(0, "Use a passphrase to encrypt the payload", tt)
         self.enc_combo.setItemData(1, "Use RSA public key to encrypt the payload", tt)
         
-        self.enc_combo.currentIndexChanged.connect(self._toggle_encryption_inputs)
+        self.enc_combo.currentIndexChanged.connect(self.toggle_encryption_inputs)
         type_row.addWidget(self.lbl_key)
         type_row.addWidget(self.enc_combo)
         layout.addLayout(type_row)
 
         self.enc_stack = QStackedWidget()
-        self.enc_stack.addWidget(self._create_password_page())
-        self.enc_stack.addWidget(self._create_public_key_page())
+        self.enc_stack.addWidget(self.create_password_page())
+        self.enc_stack.addWidget(self.create_public_key_page())
         
         layout.addWidget(self.enc_stack)
         self.encryption_box.setLayout(layout)
@@ -1198,10 +1314,10 @@ class EmbedTab(QWidget):
         
         return self.encryption_box
     
-    def _toggle_encryption_inputs(self):
+    def toggle_encryption_inputs(self):
         self.enc_stack.setCurrentIndex(self.enc_combo.currentIndex())
         
-    def _create_password_page(self):
+    def create_password_page(self):
         page = QWidget()
         layout = QGridLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1210,13 +1326,13 @@ class EmbedTab(QWidget):
         self.passphrase = QLineEdit()
         self.passphrase.setEchoMode(QLineEdit.EchoMode.Password)
         self.passphrase.setPlaceholderText("Enter Passphrase...")
-        self._add_visibility_toggle(self.passphrase)
+        self.add_visibility_toggle(self.passphrase)
         
         self.lbl_confirm = QLabel("Confirm:")
         self.confirmpassphrase = QLineEdit()
         self.confirmpassphrase.setEchoMode(QLineEdit.EchoMode.Password)
         self.confirmpassphrase.setPlaceholderText("Confirm Passphrase...")
-        self._add_visibility_toggle(self.confirmpassphrase)
+        self.add_visibility_toggle(self.confirmpassphrase)
 
         layout.addWidget(self.lbl_pass, 0, 0)
         layout.addWidget(self.passphrase, 0, 1)
@@ -1225,7 +1341,7 @@ class EmbedTab(QWidget):
         
         return page
     
-    def _add_visibility_toggle(self, line_edit):
+    def add_visibility_toggle(self, line_edit):
         """Add eye icon toggle using programmatic drawing"""
         
         def create_eye_icon(is_open):
@@ -1273,9 +1389,9 @@ class EmbedTab(QWidget):
                 
         action.triggered.connect(toggle)
     
-    def _create_public_key_page(self):
+    def create_public_key_page(self):
         page = QWidget()
-        layout = QVBoxLayout(page)  # เปลี่ยนเป็น QVBoxLayout เพื่อจัดวางง่ายขึ้น
+        layout = QVBoxLayout(page) 
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.public_key_edit = QLineEdit()
@@ -1291,22 +1407,588 @@ class EmbedTab(QWidget):
         except Exception:
             pass
 
-        # เชื่อม Signal
         self.pubkey_attachment.requestBrowse.connect(self.browse_public_key)
-        self.pubkey_attachment.fileSelected.connect(self._on_public_key_selected)
+        self.pubkey_attachment.fileSelected.connect(self.on_public_key_selected)
 
         layout.addWidget(self.pubkey_attachment)
 
         return page
+    
+    def create_right_panel(self):
+
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # ===== Splitter =====
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # ----- Preview (TOP) -----
+        self.preview_stack = self.create_preview_area()
+        splitter.addWidget(self.preview_stack)
+
+        # ----- Config Editor (BOTTOM) -----
+        self.config_editor = self.create_config_editor()
+        self.config_editor.setVisible(False)
+        splitter.addWidget(self.config_editor)
+
+        # Initial size ratio
+        splitter.setSizes([500, 200])
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+
+        layout.addWidget(splitter)
+
+        return panel
+    
+    def create_config_editor(self):
+        box = QGroupBox("Configurable Editor")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(6, 12, 6, 6)
+        layout.setSpacing(6)
+
+        # =====================================================
+        # Top Toolbar: Template Selector + Import/Export
+        # =====================================================
+        top_toolbar = QHBoxLayout()
+        top_toolbar.setSpacing(8)
         
-    def _create_right_panel(self):
+        # Template Selector Label
+        lbl_template = QLabel("Template:")
+        lbl_template.setStyleSheet("color: #ccc; font-size: 9pt; font-weight: bold;")
+        top_toolbar.addWidget(lbl_template)
+        
+        # Template Dropdown
+        self.template_combo = QComboBox()
+        self.template_combo.setMinimumWidth(200)
+        self.template_combo.setFixedHeight(26)
+        self.template_combo.addItem("-- Custom (Design Your Own) --")
+        self.template_combo.addItem("Basic: LSB++ → Encryption")
+        self.template_combo.addItem("Advanced: LSB++ → Locomotive → Encryption")
+        self.template_combo.addItem("Stealth: LSB++ → Metadata → Encryption")
+        self.template_combo.addItem("Maximum Security: Triple Layer + Encryption")
+        self.template_combo.setToolTip("Select a pre-designed embedding template or create your own")
+        self.template_combo.currentIndexChanged.connect(self._on_template_selected)
+        
+        top_toolbar.addWidget(self.template_combo)
+        top_toolbar.addStretch()
+        
+        # Import Button
+        btn_import = QPushButton("Import Config")
+        btn_import.setFixedHeight(26)
+        btn_import.setMinimumWidth(100)
+        btn_import.setStyleSheet("""
+            QPushButton {
+                background-color: #4a5a3a;
+                border: 1px solid #5a6a4a;
+                border-radius: 3px;
+                color: white;
+                font-size: 9pt;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: #5a6a4a;
+                color: white;
+            }
+            QPushButton:disabled {
+                background-color: #333;
+                color: #666;
+            }
+        """)
+        btn_import.setEnabled(True)  # เตรียมไว้อนาคต
+        btn_import.setToolTip("Import pipeline configuration from JSON file (Coming Soon)")
+        btn_import.clicked.connect(self._import_pipeline_config)
+        
+        # Export Button
+        btn_export = QPushButton("Export Config")
+        btn_export.setFixedHeight(26)
+        btn_export.setMinimumWidth(100)
+        btn_export.setStyleSheet("""
+            QPushButton {
+                background-color: #3a5a6a;
+                border: 1px solid #4a6a7a;
+                border-radius: 3px;
+                color: white;
+                font-size: 9pt;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: #4a6a8a;
+            }
+        """)
+        btn_export.setToolTip("Export current pipeline configuration to JSON file")
+        btn_export.clicked.connect(self._export_pipeline_config)
+        
+        top_toolbar.addWidget(btn_import)
+        top_toolbar.addWidget(btn_export)
+        
+        layout.addLayout(top_toolbar)
+        
+        # Separator Line
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #555;")
+        layout.addWidget(line)
+
+        # =====================================================
+        # Tab Widget
+        # =====================================================
+        self.pipeline_tabs = QTabWidget()
+        self.pipeline_tabs.addTab(self.build_config_editor_tab("embed"), "Embed Pipeline")
+        self.pipeline_tabs.addTab(self.build_config_editor_tab("extract"), "Extract Pipeline")
+
+        layout.addWidget(self.pipeline_tabs)
+        return box
+    
+    def _on_template_selected(self, index):
+        """Handle template selection from dropdown"""
+        if index == 0:
+            # Custom - do nothing, let user design
+            return
+        
+        # Clear existing pipeline
+        reply = QMessageBox.question(
+            self,
+            "Load Template",
+            f"This will clear your current pipeline and load the selected template.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.No:
+            # Reset to "Custom"
+            self.template_combo.setCurrentIndex(0)
+            return
+        
+        # Clear current pipeline
+        self._clear_all_pipelines()
+        
+        # Load template based on selection
+        if index == 1:
+            # Basic: LSB++ → Encryption
+            self._load_template_basic()
+        elif index == 2:
+            # Advanced: LSB++ → Locomotive → Encryption
+            self._load_template_advanced()
+        elif index == 3:
+            # Stealth: LSB++ → Metadata → Encryption
+            self._load_template_stealth()
+        elif index == 4:
+            # Maximum Security: Triple Layer + Encryption
+            self._load_template_max_security()
+        
+        # Reset to Custom after loading
+        self.template_combo.setCurrentIndex(0)
+
+
+    def _load_template_basic(self):
+        """Load Basic template: LSB++ with encryption"""
+        # Set technique to LSB++
+        self.tech_combo.setCurrentIndex(0)  # Assuming LSB++ is first
+        # Enable encryption
+        self.encryption_box.setChecked(True)
+        # Commit to pipeline
+        self.commit_stego_config()
+        
+        QMessageBox.information(
+            self,
+            "Template Loaded",
+            "Basic template loaded:\n• LSB++ (Encrypted)"
+        )
+
+
+    def _load_template_advanced(self):
+        """Load Advanced template: LSB++ → Locomotive"""
+        # Example implementation - adjust based on your technique indices
+        techniques = [
+            ("LSB++", True),      # (technique_name, encrypted)
+            ("Locomotive", True)
+        ]
+        
+        for tech_name, encrypted in techniques:
+            # Find technique index
+            for i in range(self.tech_combo.count()):
+                if tech_name in self.tech_combo.itemText(i):
+                    self.tech_combo.setCurrentIndex(i)
+                    self.encryption_box.setChecked(encrypted)
+                    self.commit_stego_config()
+                    break
+        
+        QMessageBox.information(
+            self,
+            "Template Loaded",
+            "Advanced template loaded:\n• LSB++ (Encrypted)\n• Locomotive (Encrypted)"
+        )
+
+
+    def _load_template_stealth(self):
+        """Load Stealth template: LSB++ → Metadata"""
+        QMessageBox.information(
+            self,
+            "Template",
+            "Stealth template (LSB++ → Metadata) - Implementation pending"
+        )
+
+
+    def _load_template_max_security(self):
+        """Load Maximum Security template: Triple layer"""
+        QMessageBox.information(
+            self,
+            "Template",
+            "Maximum Security template - Implementation pending"
+        )
+
+
+    def _import_pipeline_config(self):
+        """Import pipeline configuration from JSON file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Pipeline Configuration",
+            "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Validate structure
+            if "version" not in data or "embed_pipeline" not in data:
+                raise ValueError("Invalid configuration file format")
+            
+            # Clear and load
+            self._clear_all_pipelines()
+            
+            self.embed_pipeline = data.get("embed_pipeline", [])
+            self.extract_pipeline = data.get("extract_pipeline", [])
+            
+            # Rebuild UI
+            self.embed_list.clear()
+            self.extract_list.clear()
+            
+            for step in self.embed_pipeline:
+                self._add_list_item(self.embed_list, step["display"], step["id"])
+            
+            for step in self.extract_pipeline:
+                self._add_list_item(self.extract_list, step["display"], step["id"])
+            
+            self._update_step_labels(self.embed_list)
+            self._update_step_labels(self.extract_list)
+            
+            QMessageBox.information(
+                self,
+                "Import Successful",
+                f"Pipeline configuration imported from:\n{file_path}"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Import Error",
+                f"Failed to import configuration:\n{e}"
+            )
+    
+    def build_config_editor_tab(self, tab_type):
+
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(4, 4, 4, 4)
+            tab_layout.setSpacing(4)
+
+            # ---------------- LIST ----------------
+            list_widget = QListWidget()
+            list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+            if tab_type == "embed":
+                self.embed_list = list_widget
+            else:
+                self.extract_list = list_widget
+
+            tab_layout.addWidget(list_widget, 1)
+
+            # =====================================================
+            # BUTTON ROW  (แยกตาม tab type)
+            # =====================================================
+            btn_row = QHBoxLayout()
+            btn_row.setSpacing(6)
+
+            # -------- ACTION BUTTONS (แยกตาม tab) --------
+            if tab_type == "embed":
+                btn_exec = QPushButton("Embed Data")
+                setattr(self, "cfg_embed_btn_exec", btn_exec)
+                
+                btn_guide = QPushButton("GuideNote")
+                setattr(self, "cfg_embed_btn_guide", btn_guide)
+                
+                btn_savestg = QPushButton("Save Stego")
+                setattr(self, "cfg_embed_btn_savestg", btn_savestg)
+            else:
+                btn_exec = QPushButton("Embed Data")
+                setattr(self, "cfg_extract_btn_exec", btn_exec)
+                
+                btn_guide = QPushButton("GuideNote")
+                setattr(self, "cfg_extract_btn_guide", btn_guide)
+                
+                btn_savestg = QPushButton("Save Stego")
+                setattr(self, "cfg_extract_btn_savestg", btn_savestg)
+
+            btn_exec.setStyleSheet("font-weight:bold;background:#2d5a75;")
+            btn_savestg.setStyleSheet("font-weight:bold;background:#3d7a4d;")
+            btn_savestg.setEnabled(False)
+            btn_savestg.hide()
+
+            btn_exec.clicked.connect(self.on_run_embed)
+
+            btn_guide.clicked.connect(
+                lambda: QMessageBox.information(
+                    self,
+                    "Guide",
+                    "GuideNote editor not implemented yet."
+                )
+            )
+
+            btn_row.addWidget(btn_exec)
+            btn_row.addWidget(btn_guide)
+            btn_row.addWidget(btn_savestg)
+            btn_row.addSpacing(12)
+
+            # -------- MOVE --------
+            btn_up = QPushButton("Up")
+            btn_down = QPushButton("Down")
+
+            btn_up.clicked.connect(
+                lambda: self._move_pipeline_item(list_widget, -1)
+            )
+            btn_down.clicked.connect(
+                lambda: self._move_pipeline_item(list_widget, 1)
+            )
+
+            btn_row.addWidget(btn_up)
+            btn_row.addWidget(btn_down)
+            btn_row.addSpacing(12)
+
+            # -------- MANAGE --------
+            btn_remove = QPushButton("Remove")
+            btn_clear = QPushButton("Clear All")
+
+            btn_clear.setStyleSheet("background:#552d2d;")
+
+            if tab_type == "embed":
+                btn_remove.clicked.connect(self._remove_from_embed_pipeline)
+                btn_clear.clicked.connect(self._clear_all_pipelines)
+            else:
+                btn_remove.clicked.connect(self._remove_from_extract_pipeline)
+                btn_clear.clicked.connect(self._clear_extract_pipeline)
+
+            btn_row.addWidget(btn_remove)
+            btn_row.addWidget(btn_clear)
+
+            tab_layout.addLayout(btn_row)
+
+            # =====================================================
+            # PROGRESS SECTION (แยกตาม tab)
+            # =====================================================
+            if tab_type == "embed":
+                progress_bar = QProgressBar()
+                progress_bar.setTextVisible(False)
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(0)
+                progress_bar.setFixedHeight(6)
+                setattr(self, "cfg_embed_progress_bar", progress_bar)
+
+                status_label = QLabel("Ready.")
+                status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                status_label.setStyleSheet("color:#888;font-size:9pt;")
+                setattr(self, "cfg_embed_status_label", status_label)
+            else:
+                progress_bar = QProgressBar()
+                progress_bar.setTextVisible(False)
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(0)
+                progress_bar.setFixedHeight(6)
+                setattr(self, "cfg_extract_progress_bar", progress_bar)
+
+                status_label = QLabel("Ready.")
+                status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                status_label.setStyleSheet("color:#888;font-size:9pt;")
+                setattr(self, "cfg_extract_status_label", status_label)
+
+            tab_layout.addWidget(progress_bar)
+            tab_layout.addWidget(status_label)
+
+            return tab
+
+    # ========================================================================
+    # CONFIGURABLE EDITOR: Pipeline helpers and commit
+    # ========================================================================
+
+    def _add_list_item(self, list_widget, text, uid):
+        """Add item to list with user role id for pipeline sync."""
+        item = QListWidgetItem(text)
+        item.setData(Qt.ItemDataRole.UserRole, uid)
+        list_widget.addItem(item)
+
+    def _update_step_labels(self, list_widget):
+        """Update list items to show Step N: prefix."""
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            text = item.text()
+            if text.startswith("Step "):
+                parts = text.split(":", 1)
+                if len(parts) == 2:
+                    text = parts[1].strip()
+            item.setText(f"Step {i + 1}: {text}")
+
+    def _move_pipeline_item(self, list_widget, direction):
+        """Move selected item up (-1) or down (+1); sync pipeline data."""
+        row = list_widget.currentRow()
+        if row < 0:
+            return
+        new_row = row + direction
+        if new_row < 0 or new_row >= list_widget.count():
+            return
+        item = list_widget.takeItem(row)
+        list_widget.insertItem(new_row, item)
+        list_widget.setCurrentRow(new_row)
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        if list_widget == self.embed_list:
+            if 0 <= row < len(self.embed_pipeline) and 0 <= new_row < len(self.embed_pipeline):
+                self.embed_pipeline[row], self.embed_pipeline[new_row] = (
+                    self.embed_pipeline[new_row],
+                    self.embed_pipeline[row],
+                )
+            self._sync_extract_move(uid, direction)
+            self._update_step_labels(self.embed_list)
+        else:
+            if 0 <= row < len(self.extract_pipeline) and 0 <= new_row < len(self.extract_pipeline):
+                self.extract_pipeline[row], self.extract_pipeline[new_row] = (
+                    self.extract_pipeline[new_row],
+                    self.extract_pipeline[row],
+                )
+            self._update_step_labels(self.extract_list)
+
+    def _sync_extract_move(self, target_id, direction):
+        """Move item in extract list to match embed list reorder."""
+        idx = -1
+        for i in range(self.extract_list.count()):
+            if self.extract_list.item(i).data(Qt.ItemDataRole.UserRole) == target_id:
+                idx = i
+                break
+        if idx < 0:
+            return
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= self.extract_list.count():
+            return
+        item = self.extract_list.takeItem(idx)
+        self.extract_list.insertItem(new_idx, item)
+        self.extract_list.setCurrentRow(new_idx)
+        if 0 <= idx < len(self.extract_pipeline) and 0 <= new_idx < len(self.extract_pipeline):
+            self.extract_pipeline[idx], self.extract_pipeline[new_idx] = (
+                self.extract_pipeline[new_idx],
+                self.extract_pipeline[idx],
+            )
+        self._update_step_labels(self.extract_list)
+
+    def commit_stego_config(self):
+        """Append current technique as one step to both embed and extract pipelines."""
+        tech = self.tech_combo.currentText()
+        encrypted = self.encryption_box.isChecked()
+        name = tech.split("(")[0].strip()
+        display = f"{name}" + (" (Encrypted)" if encrypted else "")
+        step_id = str(uuid.uuid4())
+        self._add_list_item(self.embed_list, display, step_id)
+        self._add_list_item(self.extract_list, display, step_id)
+        cfg = {"id": step_id, "technique": tech, "encrypted": encrypted, "display": display}
+        self.embed_pipeline.append(cfg)
+        self.extract_pipeline.append(cfg)
+        self._update_step_labels(self.embed_list)
+        self._update_step_labels(self.extract_list)
+
+    def _remove_from_embed_pipeline(self):
+        """Remove selected item from both pipelines by id."""
+        row = self.embed_list.currentRow()
+        if row < 0:
+            return
+        item = self.embed_list.item(row)
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        if not uid:
+            return
+        self.embed_list.takeItem(row)
+        self.embed_pipeline = [p for p in self.embed_pipeline if p.get("id") != uid]
+        for i in range(self.extract_list.count()):
+            if self.extract_list.item(i).data(Qt.ItemDataRole.UserRole) == uid:
+                self.extract_list.takeItem(i)
+                break
+        self.extract_pipeline = [p for p in self.extract_pipeline if p.get("id") != uid]
+        self._update_step_labels(self.embed_list)
+        self._update_step_labels(self.extract_list)
+
+    def _remove_from_extract_pipeline(self):
+        """Remove selected item from extract list and pipeline."""
+        row = self.extract_list.currentRow()
+        if row < 0:
+            return
+        item = self.extract_list.item(row)
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        if not uid:
+            return
+        self.extract_list.takeItem(row)
+        self.extract_pipeline = [p for p in self.extract_pipeline if p.get("id") != uid]
+        self._update_step_labels(self.extract_list)
+
+    def _clear_all_pipelines(self):
+        """Clear both list widgets and pipeline data."""
+        self.embed_list.clear()
+        self.extract_list.clear()
+        self.embed_pipeline = []
+        self.extract_pipeline = []
+
+    def _clear_extract_pipeline(self):
+        """Clear extract list and pipeline only."""
+        self.extract_list.clear()
+        self.extract_pipeline = []
+
+    def _export_pipeline_config(self):
+        """Save embed and extract pipeline to a JSON file for Extract page or future Import as template."""
+        data = {
+            "version": 1,
+            "embed_pipeline": getattr(self, "embed_pipeline", []),
+            "extract_pipeline": getattr(self, "extract_pipeline", []),
+        }
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Pipeline Config",
+            "",
+            "JSON (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(
+                self,
+                "Export Config",
+                f"Pipeline configuration saved to:\n{path}",
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to save config:\n{e}",
+            )
+
+    def create_preview_area(self):
         stack = QStackedWidget()
-        stack.addWidget(self._create_standalone_page())
-        stack.addWidget(self._create_locomotive_page())
-        # stack.addWidget(self._create_configurable_page())
+        stack.addWidget(self.create_lsb_page())
+        stack.addWidget(self.create_locomotive_page())
+        # stack.addWidget(self.create_metadata_page())
         return stack
     
-    def _create_locomotive_list_widget(self):
+    def create_locomotive_list_widget(self):
         widget = QListWidget()
         widget.setViewMode(QListWidget.ViewMode.IconMode)
         widget.setResizeMode(QListWidget.ResizeMode.Adjust)
@@ -1318,7 +2000,7 @@ class EmbedTab(QWidget):
         widget.setStyleSheet(LOCO_LIST_STYLE)
         return widget
     
-    def _create_locomotive_button_row(self):
+    def create_locomotive_button_row(self):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
         
@@ -1337,7 +2019,7 @@ class EmbedTab(QWidget):
         btn_row.addStretch()
         return btn_row
     
-    def _build_locomotive_list_section(self, mode):
+    def build_locomotive_list_section(self, mode):
         title = f"Selected Files ({len(self.locomotive_files)} fragments)"
         
         loco_group_box = QGroupBox(title)
@@ -1349,7 +2031,7 @@ class EmbedTab(QWidget):
         layout.setContentsMargins(6, 12, 6, 6)
         layout.setSpacing(6)
 
-        loco_list_widget = self._create_locomotive_list_widget()
+        loco_list_widget = self.create_locomotive_list_widget()
         loco_list_widget.setMinimumHeight(150)
         
         self.loco_list_widget = loco_list_widget
@@ -1357,13 +2039,13 @@ class EmbedTab(QWidget):
         layout.addWidget(loco_list_widget, 1)
         
         # Add control buttons for both standalone and configurable modes
-        btn_row = self._create_locomotive_button_row()
+        btn_row = self.create_locomotive_button_row()
         layout.addLayout(btn_row, 0)
         
         loco_group_box.setLayout(layout)
         return loco_group_box
     
-    def _create_locomotive_page(self):
+    def create_locomotive_page(self):
         page = QWidget()
         page.setMinimumSize(400, 400)
         
@@ -1378,16 +2060,16 @@ class EmbedTab(QWidget):
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
         
-        self.loco_list_box = self._build_locomotive_list_section("std")
+        self.loco_list_box = self.build_locomotive_list_section("std")
         scroll_area.setWidget(self.loco_list_box)
         
         layout.addWidget(scroll_area, 1)
-        layout.addWidget(self._build_execution_group("Execute Locomotive Embedding", "loco"), 0)
+        layout.addWidget(self.build_execution_group("Execute Locomotive Embedding", "loco"), 0)
         return page
 
 
     # Components(Groupbox) of right panel
-    def _create_standalone_page(self):
+    def create_lsb_page(self):
         page = QWidget()
         page.setMinimumSize(400, 400)
         
@@ -1408,17 +2090,16 @@ class EmbedTab(QWidget):
         content_layout.setSpacing(6)
         
         self.standalone_content_stack = QStackedWidget()
-        self.standalone_content_stack.addWidget(self._build_preview_section_with_stats())
-        # self.standalone_content_stack.addWidget(self._create_metadata_editor_container("std"))
+        self.standalone_content_stack.addWidget(self.build_preview_section_with_stats())
         
         content_layout.addWidget(self.standalone_content_stack, 1)
         scroll_area.setWidget(content_widget)
         
         layout.addWidget(scroll_area, 1)
-        layout.addWidget(self._build_execution_group("Embed Data", "std"), 0)
+        layout.addWidget(self.build_execution_group("Embed Data", "std"), 0)
         return page
     
-    def _build_preview_section_with_stats(self):
+    def build_preview_section_with_stats(self):
         """Preview section with stats display (for LSB++ mode)"""
         group_box = QGroupBox("Preview")
         group_layout = QVBoxLayout()
@@ -1455,13 +2136,13 @@ class EmbedTab(QWidget):
         group_layout.addWidget(preview_info_label, 0)
         
         # Stats Row (below preview)
-        stats_container = self._build_stats_row()
+        stats_container = self.build_stats_row()
         group_layout.addWidget(stats_container, 0)
         
         group_box.setLayout(group_layout)
         return group_box
     
-    def _build_stats_row(self):
+    def build_stats_row(self):
         """Build stats display row"""
         container = QWidget()
         container.setStyleSheet("""
@@ -1532,10 +2213,22 @@ class EmbedTab(QWidget):
             lbl_name.setText("None")
             lbl_name.setToolTip("")
             
-    def _build_execution_group(self, button_text, prefix): # <--- เพิ่ม parameter prefix
+    def build_execution_group(self, button_text, prefix):
+        """
+        สร้าง Execution Group สำหรับ LSB++ (std) และ Locomotive (loco)
+        โดยจะซ่อนตัวเองอัตโนมัติเมื่ออยู่ใน Configurable Mode
+        """
         container = QWidget()
         container.setMinimumHeight(60)
         container.setMaximumHeight(80)
+        
+        # ⭐ ตั้งค่า Size Policy ให้ยุบได้เมื่อซ่อน
+        size_policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        size_policy.setRetainSizeWhenHidden(False)  # 🔑 สำคัญมาก: ไม่เว้นพื้นที่เมื่อซ่อน
+        container.setSizePolicy(size_policy)
+        
+        # เก็บ container เพื่อให้สามารถซ่อน/แสดงได้ในภายหลัง
+        setattr(self, f"{prefix}_execution_container", container)
         
         layout = QVBoxLayout(container)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -1548,7 +2241,7 @@ class EmbedTab(QWidget):
             "font-weight: bold; font-size: 11pt; "
             "background-color: #2d5a75; border-radius: 4px; color: white;"
         )
-        setattr(self, f"{prefix}_btn_exec", btn_exec) # เก็บลงตัวแปร self.std_btn_exec หรือ self.loco_btn_exec
+        setattr(self, f"{prefix}_btn_exec", btn_exec)
         
         btn_savestg = QPushButton("Save stego")
         btn_savestg.setMinimumHeight(35)
@@ -1574,7 +2267,7 @@ class EmbedTab(QWidget):
         setattr(self, f"{prefix}_status_label", status_label)
         
         # Connect Signal
-        btn_exec.clicked.connect(lambda: self._on_run_embed())
+        btn_exec.clicked.connect(lambda: self.on_run_embed())
         
         # Layout
         hlayout = QHBoxLayout() 
@@ -1586,13 +2279,18 @@ class EmbedTab(QWidget):
         layout.addWidget(progress_bar)
         layout.addWidget(status_label)
         
+        # ตรวจสอบว่าอยู่ใน Configurable Mode หรือไม่ เพื่อซ่อน container
+        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+        if is_config:
+            container.setVisible(False)
+        
         return container
     
-    def _on_save_stego(self, stego_data, metrics):
+    def on_save_stego(self, stego_data, metrics):
         """
         ฟังก์ชันบันทึกผลลัพธ์ (รองรับทั้ง LSB++ และ Locomotive)
         """
-        ui = self._get_active_ui()
+        ui = self.get_active_ui()
         
         try:
             # =========================================================
@@ -1613,8 +2311,23 @@ class EmbedTab(QWidget):
                         
                         QMessageBox.information(self, "Success", f"File saved to:\n{save_path}")
                         if ui['status']: ui['status'].setText("Saved successfully.")
+                        # Update Configurable Editor status and record step to pipeline
+                        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+                        if is_config:
+                            self.commit_stego_config()
+                            if hasattr(self, 'cfg_embed_status_label'):
+                                self.cfg_embed_status_label.setText("Saved successfully.")
+                            if hasattr(self, 'cfg_extract_status_label'):
+                                self.cfg_extract_status_label.setText("Saved successfully.")
                     else:
                         if ui['status']: ui['status'].setText("Save cancelled.")
+                        # Update Configurable Editor status (both tabs)
+                        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+                        if is_config:
+                            if hasattr(self, 'cfg_embed_status_label'):
+                                self.cfg_embed_status_label.setText("Save cancelled.")
+                            if hasattr(self, 'cfg_extract_status_label'):
+                                self.cfg_extract_status_label.setText("Save cancelled.")
                         
                 # กรณี 2: เป็นโฟลเดอร์ (Sharding Mode - หลายรูป)
                 elif os.path.isdir(src_path):
@@ -1632,6 +2345,13 @@ class EmbedTab(QWidget):
                         
                         QMessageBox.information(self, "Success", f"Output folder saved to:\n{target_path}")
                         if ui['status']: ui['status'].setText("Saved successfully.")
+                        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+                        if is_config:
+                            self.commit_stego_config()
+                            if hasattr(self, 'cfg_embed_status_label'):
+                                self.cfg_embed_status_label.setText("Saved successfully.")
+                            if hasattr(self, 'cfg_extract_status_label'):
+                                self.cfg_extract_status_label.setText("Saved successfully.")
                     else:
                         if ui['status']: ui['status'].setText("Save cancelled.")
 
@@ -1673,6 +2393,13 @@ class EmbedTab(QWidget):
                         QMessageBox.information(self, "Success", info_msg)
                         if ui['status']:
                             ui['status'].setText("Saved successfully.")
+                        is_config = hasattr(self, 'mode_combo') and self.mode_combo.currentText() == "Configurable Model"
+                        if is_config:
+                            self.commit_stego_config()
+                            if hasattr(self, 'cfg_embed_status_label'):
+                                self.cfg_embed_status_label.setText("Saved successfully.")
+                            if hasattr(self, 'cfg_extract_status_label'):
+                                self.cfg_extract_status_label.setText("Saved successfully.")
                     else:
                         QMessageBox.critical(self, "Error", "PIL library missing.")
                 else:
@@ -1739,9 +2466,9 @@ class EmbedTab(QWidget):
         
         return widget
     
-    def _get_active_ui(self):
+    def get_active_ui(self):
         """Helper เพื่อดึง widget ควบคุมของหน้าที่ active อยู่"""
-        if self.right_panel_stack.currentIndex() == PAGE_LOCOMOTIVE:
+        if self.preview_stack.currentIndex() == PAGE_LOCOMOTIVE:
             return {
                 'btn_exec': getattr(self, 'loco_btn_exec', None),
                 'btn_save': getattr(self, 'loco_btn_savestg', None),
@@ -1756,3 +2483,5 @@ class EmbedTab(QWidget):
                 'progress': getattr(self, 'std_progress_bar', None),
                 'status': getattr(self, 'std_status_label', None)
             }
+            
+    

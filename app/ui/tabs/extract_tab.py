@@ -31,6 +31,9 @@ from PyQt6.QtWidgets import (
     QFileDialog, QStyle
 )
 
+from app.ui.tabs.embed_tab import DraggablePreviewLabel
+from app.utils.file_io import format_file_size
+
 
 # ============================================================================
 # CONSTANTS & STYLES
@@ -98,28 +101,29 @@ from app.ui.components.attachment_drop_widget import AttachmentDropWidget
 from app.ui.components.metadata_drop_widget import MetadataDropWidget
 from app.ui.dialogs.text_editor_dialog import TextEditorDialog
 
-class EmbedTab(QWidget):
+class ExtractTab(QWidget):
     def __init__(self):
        super().__init__()
-       self._init_ui()
+       self.init_ui()
        
-    def _init_ui(self):
-        self.setMinimumSize(800, 500)
+    def init_ui(self):
+        self.setMinimumSize(1000, 700)
+        
         
         main_layout = QHBoxLayout(self)
         main_layout.setSpacing(8)
         main_layout.setContentsMargins(8, 8, 8, 8)
         
-        left_panel = self._create_left_panel()
-        self.right_panel_stack = self._create_right_panel()
+        left_panel = self.create_left_panel()
+        right_panel = self.create_right_panel()
         
         #ratio: left panel gets 35%, right panel gets 65%
         main_layout.addWidget(left_panel, 35)
-        main_layout.addWidget(self.right_panel_stack, 65)
+        main_layout.addWidget(right_panel, 65)
         
         # self.on_technique_changed()
         
-    def _create_left_panel(self):
+    def create_left_panel(self):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -135,26 +139,18 @@ class EmbedTab(QWidget):
         layout.setSpacing(6)
         layout.setContentsMargins(4, 4, 4, 4)
         
-        layout.addWidget(self._build_mode_section())
-        layout.addWidget(self._build_technique_section())
-        layout.addWidget(self._build_carrier_section())
-        layout.addWidget(self._build_payload_section(), 1)
-        layout.addWidget(self._build_encryption_section())
+        layout.addWidget(self.build_mode_section())
+        layout.addWidget(self.build_technique_section())
+        layout.addWidget(self.build_stego_section())
+        layout.addWidget(self.build_preview_section())
+        layout.addWidget(self.build_decryption_section())
         layout.addStretch()
         
         scroll_area.setWidget(widget)
         return scroll_area
     
-    def _create_right_panel(self):
-        stack = QStackedWidget()
-        # stack.addWidget(self._create_standalone_page())
-        # stack.addWidget(self._create_locomotive_page())
-        # stack.addWidget(self._create_configurable_page())
-        return stack
-    
-    # Components(Groupbox) of left panel
-    def _build_mode_section(self):
-        return self._create_combo_group("Mode Selection", [
+    def build_mode_section(self):
+        return self.create_combo_group("Mode Selection", [
             (
                 "Standalone", 
                 "Hide data using one specific method independently."
@@ -165,8 +161,8 @@ class EmbedTab(QWidget):
             )
         ], "mode_combo")
 
-    def _build_technique_section(self):
-        return self._create_combo_group("Technique Selection", [
+    def build_technique_section(self):
+        return self.create_combo_group("Technique Selection", [
             (
             "LSB++", 
             "Hides data in PNG pixels using an adaptive LSB algorithm with password-based distribution."
@@ -181,7 +177,7 @@ class EmbedTab(QWidget):
             )
         ], "tech_combo")
     
-    def _create_combo_group(self, title, items, attribute_name):
+    def create_combo_group(self, title, items, attribute_name):
         box = QGroupBox(title)
         box.setMinimumHeight(70)
         box.setMaximumHeight(85)
@@ -205,17 +201,19 @@ class EmbedTab(QWidget):
                 combo.setItemData(current_index, hint, Qt.ItemDataRole.ToolTipRole)
             
         setattr(self, attribute_name, combo)
-        # Connect to appropriate handler based on attribute name
+        # combo.currentIndexChanged.connect(self.on_technique_changed)
+        
         # if attribute_name == "mode_combo":
         #     combo.currentIndexChanged.connect(self.on_mode_changed)
         # else:
         #     combo.currentIndexChanged.connect(self.on_technique_changed)
+
+
         layout.addWidget(combo)
         box.setLayout(layout)
         return box
-        
-    def _build_carrier_section(self):
-            box = QGroupBox("Carrier Input")
+    def build_stego_section(self):
+            box = QGroupBox("Select Stego File")
             box.setMinimumHeight(75)
             box.setMaximumHeight(90)
             
@@ -223,246 +221,132 @@ class EmbedTab(QWidget):
             layout.setContentsMargins(6, 12, 6, 6)
             layout.setSpacing(6)
             
-            self.carrier_edit = QLineEdit()
-            self.carrier_edit.setReadOnly(True)
-            self.carrier_edit.setPlaceholderText("Select PNG Image...")
+            self.stegoFile_edit = QLineEdit()
+            self.stegoFile_edit.setReadOnly(True)
+            self.stegoFile_edit.setPlaceholderText("Select PNG Image...")
             
-            self.carrier_browse_btn = QPushButton("Browse")
+            self.stegoFile_browse_btn = QPushButton("Browse")
             
-            layout.addWidget(self.carrier_edit)
-            layout.addWidget(self.carrier_browse_btn)
+            layout.addWidget(self.stegoFile_edit)
+            layout.addWidget(self.stegoFile_browse_btn)
             
             box.setLayout(layout)
             return box
     
-    def _build_payload_section(self):
-        box = QGroupBox("Payload Input")
-        self.payload_main_group = box
-        box.setMinimumHeight(200)
-        layout = QVBoxLayout()
-        layout.setContentsMargins(6, 12, 6, 6)
+    def build_preview_section(self):
+        stack = self.create_preview_area()
+        self.preview_stack = stack
+        
+        return stack
+        
+        
+    def create_preview_area(self):
+        stack = QStackedWidget()
+        stack.addWidget(self.create_lsb_page())
+        # stack.addWidget(self.create_locomotive_page())
+        # stack.addWidget(self.create_metadata_page())
+        return stack
+        
+    def create_lsb_page(self):
+        """Preview section with stats display (for LSB++ mode)"""
+        group_box = QGroupBox("Preview")
+        group_layout = QVBoxLayout()
+        group_layout.setContentsMargins(6, 12, 6, 6)
+        group_layout.setSpacing(6)
+        
+        # Preview Label with drag-and-drop support
+        self.preview_label = DraggablePreviewLabel()
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setText("No Image Selected\n\nSelect PNG image  from left panel\nor drag & drop PNG file here")
+        self.preview_label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #555;
+                background-color: #222;
+                color: #888;
+                font-size: 10pt;
+            }
+        """)
+        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setScaledContents(False)
+        
+        
+        # self.preview_label.image_dropped.connect(self._on_preview_image_dropped)
+        
+        group_layout.addWidget(self.preview_label, 1)
+        
+        # Info Label (file info)
+        preview_info_label = QLabel("")
+        preview_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview_info_label.setStyleSheet("color: #e0e0e0; font-size: 9pt;")
+        preview_info_label.hide()
+        setattr(self, f"preview_info_label", preview_info_label)
+        
+        group_layout.addWidget(preview_info_label, 0)
+        
+        
+        # Stats Row (below preview)
+        stats_container = self.build_stats_row()
+        group_layout.addWidget(stats_container, 0)
+        
+        group_box.setLayout(group_layout)
+        return group_box
+    
+    def build_stats_row(self):
+        """Build stats display row"""
+        container = QWidget()
+        container.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 4px;
+            }
+        """)
+        
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+        
+        
+        # File Name Stat
+        self.stat_filename = self.create_stat_item("File:", "No Image", "#e0e0e0")
+        layout.addWidget(self.stat_filename)
+        
+        # Image Size Stat
+        self.stat_image_size = self.create_stat_item("Image Size:", "No Image", "#e0e0e0")
+        layout.addWidget(self.stat_image_size)
+         
+        return container
+    
+    def create_stat_item(self, label_text, value_text, color):
+        """Create a single stat item"""
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent; border: none;")
+        
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         
-        self.payload_stack = QStackedWidget()
-        self.payload_stack.addWidget(self._create_standard_payload_page())
-        # self.payload_stack.addWidget(self._create_metadata_payload_page())
+        # Label
+        label = QLabel(label_text)
+        label.setStyleSheet("color: #888; font-size: 9pt; background: transparent; border: none;")
         
-        size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        size_policy.setVerticalStretch(1)
-        self.payload_stack.setSizePolicy(size_policy)
+        # Value
+        value = QLabel(value_text)
+        value.setObjectName(f"stat_value_{label_text.replace(':', '').replace(' ', '_').lower()}")
+        value.setStyleSheet(f"color: {color}; font-size: 9pt; background: transparent; border: none;")
         
-        layout.addWidget(self.payload_stack, 1)
-        box.setLayout(layout)
-        return box
+        layout.addWidget(label)
+        layout.addWidget(value)
+        layout.addStretch()
+        
+        # Store reference to value label
+        widget.value_label = value
+        
+        return widget
     
-    def _create_standard_payload_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.payload_tabs = QTabWidget()
-        self.payload_tabs.addTab(self._create_text_payload_tab(), "Text Message")
-        self.payload_tabs.addTab(self._create_file_payload_tab(), "File Attachment")
-        
-        layout.addWidget(self.payload_tabs)
-        return page
-    
-    def _create_text_payload_tab(self):
-            tab = QWidget()
-            layout = QVBoxLayout(tab)
-            layout.setContentsMargins(4, 4, 4, 4)
-            layout.setSpacing(4)
-            
-            self.payload_text = QTextEdit()
-            self.payload_text.setPlaceholderText("Enter secret message here...")
-            
-            # toolbar: text editor & capacity text
-            toolbar = QHBoxLayout()
-            toolbar.setSpacing(4)
-            btn_editor = QPushButton("Text Editor")
-            btn_editor.setMinimumSize(100, 25)
-            btn_editor.setStyleSheet("font-size: 8pt; padding: 2px;")
-            btn_editor.clicked.connect(self.open_text_editor)
-            
-            self.lbl_capacity = QLabel("capacity: 0/100")
-            self.lbl_capacity.setAlignment(Qt.AlignmentFlag.AlignRight)
-            self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
-            
-            toolbar.addWidget(btn_editor)
-            toolbar.addStretch()
-            toolbar.addWidget(self.lbl_capacity)
-        
-            layout.addWidget(self.payload_text, 1)
-            layout.addLayout(toolbar, 0)
-            
-            self.payload_text.textChanged.connect(self.update_capacity_indicator)
-            
-            # self.payload_text.textChanged.connect(self._on_payload_changed)
-            
-            return tab
-    
-    def _create_file_payload_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(5, 10, 5, 10)  # Balanced top/bottom spacing
-        layout.setSpacing(6)
-        
-        self.payload_file_path = QLineEdit()
-        self.payload_file_path.setPlaceholderText("Path to secret file...")
-        self.payload_file_path.hide()
-        
-        self.attachment_widget = AttachmentDropWidget()
-        self.attachment_widget.fileSelected.connect(self._on_file_selected)
-        self.attachment_widget.fileCleared.connect(self.payload_file_path.clear)
-
-        self.attachment_widget.requestBrowse.connect(self.browse_payload_file)
-
-        # Default hint: prefer text-mode files for File Attachment techniques
-        try:
-            self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files only: .txt, .md, .csv, ...)")
-        except Exception:
-            pass
-
-        layout.addWidget(self.attachment_widget, 1)
-        layout.addWidget(self.payload_file_path, 0)
-        
-        return tab
-                    
-    # ========================================================================
-    # CAPACITY & TEXT EDITOR
-    # ========================================================================
-
-    def update_capacity_indicator(self):
-        text = self.payload_text.toPlainText()
-        count = len(text)
-        max_cap = 100
-        
-        self.lbl_capacity.setText(f"capacity: {count}/{max_cap}")
-        
-        if count > max_cap:
-            self.lbl_capacity.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 8pt;")
-        else:
-            self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
-
-    def open_text_editor(self):
-        current_text = self.payload_text.toPlainText()
-        dialog = TextEditorDialog(current_text, self)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.payload_text.setPlainText(dialog.get_text())
-            
-    # ========================================================================
-    # FILE SELECTION HANDLERS
-    # ========================================================================
-    
-    def _on_file_selected(self, file_path):
-        """Handle file selection from drag-drop (called by signal from AttachmentDropWidget)"""
-        # NOTE: This is ONLY called when user drags a file, NOT when browsing
-        
-        self.payload_file_path.setText(file_path)
-        
-        current_tech = self.tech_combo.currentText()
-        is_locomotive = "Locomotive" in current_tech
-        
-        # Extract text content for LSB++ mode
-        if not is_locomotive:
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext in TEXT_FILE_EXTENSIONS:
-                try:
-                    # Simple read with UTF-8
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    self.payload_text.setPlainText(content)
-                    self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-                    self.update_capacity_indicator()
-                except UnicodeDecodeError:
-                    # Try other common encodings
-                    for encoding in ['utf-16', 'latin-1', 'cp1252']:
-                        try:
-                            with open(file_path, 'r', encoding=encoding) as f:
-                                content = f.read()
-                            self.payload_text.setPlainText(content)
-                            self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-                            self.update_capacity_indicator()
-                            break
-                        except:
-                            continue
-                except Exception as e:
-                    print(f"Error reading file: {e}")
-
-    def _on_public_key_selected(self, file_path):
-        """Handler for when a public-key file is selected in the attachment widget."""
-        self.public_key_edit.setText(file_path)
-
-    def browse_public_key(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Public Key", "", "PEM Files (*.pem);;All Files (*)"
-        )
-        if file_path:
-            # Update both the read-only path field and the attachment widget
-            self.public_key_edit.setText(file_path)
-            if hasattr(self, 'pubkey_attachment'):
-                try:
-                    self.pubkey_attachment.set_file(file_path)
-                except Exception:
-                    pass
-    
-    def browse_payload_file(self):
-        current_tech = self.tech_combo.currentText()
-        is_locomotive = "Locomotive" in current_tech
-
-        if is_locomotive:
-            file_filter = "All Files (*)"
-            caption = "Select Secret File (Any Type)"
-        else:
-            # Expanded file filters for LSB++ mode
-            file_filter = (
-                "Text Files (*.txt *.md *.csv *.json *.xml *.log);;"
-                "Code Files (*.py *.js *.ts *.java *.cpp *.c *.h *.cs *.go *.rs);;"
-                "Config Files (*.yml *.yaml *.toml *.ini *.conf *.cfg *.env);;"
-                "Web Files (*.html *.css *.scss *.jsx *.tsx *.vue);;"
-                "Script Files (*.sql *.sh *.bat *.ps1);;"
-                "All Files (*)"
-            )
-            caption = "Select Secret Text File"
-
-        file_path, _ = QFileDialog.getOpenFileName(self, caption, "", file_filter)
-        
-        if file_path:
-            # Set file in attachment widget (this is the ONLY place we call set_file from browse)
-            if hasattr(self, 'attachment_widget'):
-                self.attachment_widget.set_file(file_path)
-            
-            self.payload_file_path.setText(file_path)
-            
-            # Extract text content for LSB++ mode
-            if not is_locomotive:
-                ext = os.path.splitext(file_path)[1].lower()
-                if ext in TEXT_FILE_EXTENSIONS:
-                    try:
-                        # Simple read with UTF-8
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        self.payload_text.setPlainText(content)
-                        self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-                        self.update_capacity_indicator()
-                    except UnicodeDecodeError:
-                        # Try other common encodings
-                        for encoding in ['utf-16', 'latin-1', 'cp1252']:
-                            try:
-                                with open(file_path, 'r', encoding=encoding) as f:
-                                    content = f.read()
-                                self.payload_text.setPlainText(content)
-                                self.payload_tabs.setCurrentIndex(TAB_INDEX_TEXT)
-                                self.update_capacity_indicator()
-                                break
-                            except:
-                                continue
-                    except Exception as e:
-                        print(f"Error reading file: {e}")
-                        
-    def _build_encryption_section(self):
-        self.encryption_box = QGroupBox("Encryption Options")
+    def build_decryption_section(self):
+        self.encryption_box = QGroupBox("Decryption Options")
         self.encryption_box.setCheckable(True)
         self.encryption_box.setChecked(True)
         self.encryption_box.setMinimumHeight(160)
@@ -481,14 +365,14 @@ class EmbedTab(QWidget):
         self.enc_combo.setItemData(0, "Use a passphrase to encrypt the payload", tt)
         self.enc_combo.setItemData(1, "Use RSA public key to encrypt the payload", tt)
         
-        self.enc_combo.currentIndexChanged.connect(self._toggle_encryption_inputs)
+        self.enc_combo.currentIndexChanged.connect(self.toggle_decryption_inputs)
         type_row.addWidget(self.lbl_key)
         type_row.addWidget(self.enc_combo)
         layout.addLayout(type_row)
 
         self.enc_stack = QStackedWidget()
-        self.enc_stack.addWidget(self._create_password_page())
-        self.enc_stack.addWidget(self._create_public_key_page())
+        self.enc_stack.addWidget(self.create_password_page())
+        self.enc_stack.addWidget(self.create_public_key_page())
         
         layout.addWidget(self.enc_stack)
         self.encryption_box.setLayout(layout)
@@ -498,10 +382,10 @@ class EmbedTab(QWidget):
         
         return self.encryption_box
     
-    def _toggle_encryption_inputs(self):
+    def toggle_decryption_inputs(self):
         self.enc_stack.setCurrentIndex(self.enc_combo.currentIndex())
         
-    def _create_password_page(self):
+    def create_password_page(self):
         page = QWidget()
         layout = QGridLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -510,13 +394,13 @@ class EmbedTab(QWidget):
         self.passphrase = QLineEdit()
         self.passphrase.setEchoMode(QLineEdit.EchoMode.Password)
         self.passphrase.setPlaceholderText("Enter Passphrase...")
-        self._add_visibility_toggle(self.passphrase)
+        self.add_visibility_toggle(self.passphrase)
         
         self.lbl_confirm = QLabel("Confirm:")
         self.confirmpassphrase = QLineEdit()
         self.confirmpassphrase.setEchoMode(QLineEdit.EchoMode.Password)
         self.confirmpassphrase.setPlaceholderText("Confirm Passphrase...")
-        self._add_visibility_toggle(self.confirmpassphrase)
+        self.add_visibility_toggle(self.confirmpassphrase)
 
         layout.addWidget(self.lbl_pass, 0, 0)
         layout.addWidget(self.passphrase, 0, 1)
@@ -525,7 +409,7 @@ class EmbedTab(QWidget):
         
         return page
     
-    def _add_visibility_toggle(self, line_edit):
+    def add_visibility_toggle(self, line_edit):
         """Add eye icon toggle using programmatic drawing"""
         
         def create_eye_icon(is_open):
@@ -572,10 +456,11 @@ class EmbedTab(QWidget):
                 action.setIcon(icon_hidden)
                 
         action.triggered.connect(toggle)
-    
-    def _create_public_key_page(self):
+        
+        
+    def create_public_key_page(self):
         page = QWidget()
-        layout = QVBoxLayout(page)  # เปลี่ยนเป็น QVBoxLayout เพื่อจัดวางง่ายขึ้น
+        layout = QVBoxLayout(page) 
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.public_key_edit = QLineEdit()
@@ -584,19 +469,173 @@ class EmbedTab(QWidget):
         layout.addWidget(self.public_key_edit) 
 
         # Attachment widget for public key (accept .pem by default)
-        self.pubkey_attachment = AttachmentDropWidget()
+        self.pubkey_attachment = AttachmentDropWidget(allowed_extensions='.pem')
         
         try:
             self.pubkey_attachment.empty_label.setText("Import Public Key\n(.pem files)")
         except Exception:
             pass
 
-        # เชื่อม Signal
-        self.pubkey_attachment.requestBrowse.connect(self.browse_public_key)
-        self.pubkey_attachment.fileSelected.connect(self._on_public_key_selected)
+        # self.pubkey_attachment.requestBrowse.connect(self.browse_public_key)
+        # self.pubkey_attachment.fileSelected.connect(self.on_public_key_selected)
 
         layout.addWidget(self.pubkey_attachment)
 
         return page
+    
+    def create_right_panel(self):
+        box = QGroupBox("Payload Input")
+        self.payload_main_group = box
+        box.setMinimumHeight(200)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(6, 12, 6, 6)
+        layout.setSpacing(4)
+        
+        self.payload_stack = QStackedWidget()
+        self.payload_stack.addWidget(self.create_standard_payload_page())
+        # self.payload_stack.addWidget(self._create_metadata_preview_page())
+        
+        size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        size_policy.setVerticalStretch(1)
+        self.payload_stack.setSizePolicy(size_policy)
+        
+        layout.addWidget(self.payload_stack, 1)
+        layout.addWidget(self.build_execution_group("Extract data", "loco"), 0)
+        box.setLayout(layout)
+        return box
+    
+    def build_execution_group(self, button_text, prefix):
+        container = QWidget()
+        container.setMinimumHeight(60)
+        container.setMaximumHeight(80)
+        
+        
+        # เก็บ container เพื่อให้สามารถซ่อน/แสดงได้ในภายหลัง
+        setattr(self, f"{prefix}_execution_container", container)
+        
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+        
+        # สร้างปุ่มและตั้งชื่อตัวแปรแบบ Dynamic ตาม prefix
+        btn_exec = QPushButton(button_text)
+        btn_exec.setMinimumHeight(35)
+        btn_exec.setStyleSheet(
+            "font-weight: bold; font-size: 11pt; "
+            "background-color: #2d5a75; border-radius: 4px; color: white;"
+        )
+        setattr(self, f"{prefix}_btn_exec", btn_exec)
+        
+        # Progress Bar
+        progress_bar = QProgressBar()
+        progress_bar.setValue(0)
+        progress_bar.setTextVisible(False)
+        progress_bar.setFixedHeight(6)
+        setattr(self, f"{prefix}_progress_bar", progress_bar)
+        
+        # Status Label
+        status_label = QLabel("Ready.")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_label.setStyleSheet("color: #888; font-size: 9pt;")
+        setattr(self, f"{prefix}_status_label", status_label)
+        
+        # Connect Signal
+        # btn_exec.clicked.connect(lambda: self.on_run_embed())
+        
+        # Layout
+        hlayout = QHBoxLayout() 
+        hlayout.setSpacing(10)
+        hlayout.addWidget(btn_exec)
+        
+        layout.addLayout(hlayout)
+        layout.addWidget(progress_bar)
+        layout.addWidget(status_label)
+        
+        
+        return container
+    
+    def create_standard_payload_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.payload_tabs = QTabWidget()
+        self.payload_tabs.addTab(self.create_text_payload_tab(), "Text Message")
+        self.payload_tabs.addTab(self.create_file_payload_tab(), "File Attachment")
+        
+        layout.addWidget(self.payload_tabs)
+        return page
+    
+    def create_text_payload_tab(self):
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(4)
+            
+            self.payload_text = QTextEdit()
+            self.payload_text.setPlaceholderText("Enter secret message here...")
+            
+            # toolbar: text editor & capacity text
+            toolbar = QHBoxLayout()
+            toolbar.setSpacing(4)
+            btn_editor = QPushButton("Save as txt.")
+            btn_editor.setMinimumSize(100, 25)
+            btn_editor.setStyleSheet("font-size: 8pt; padding: 2px;")
+            
+            self.lbl_capacity = QLabel("Size: 0 B")
+            self.lbl_capacity.setAlignment(Qt.AlignmentFlag.AlignRight)
+            self.lbl_capacity.setStyleSheet("color: #aaa;  font-size: 8pt;")
+            
+            toolbar.addWidget(btn_editor)
+            toolbar.addStretch()
+            toolbar.addWidget(self.lbl_capacity)
+        
+            layout.addWidget(self.payload_text, 1)
+            layout.addLayout(toolbar, 0)
+            
+            self.payload_text.textChanged.connect(self.update_capacity_indicator)
+            
+            # self.payload_text.textChanged.connect(self._on_payload_changed)
+            
+            return tab
+        
+    def update_capacity_indicator(self):
+        """คำนวณขนาดและแสดงสถานะ 3 ระดับ"""
+        if not hasattr(self, 'payload_text'): return
+
+        text_bytes = self.payload_text.toPlainText().encode('utf-8')
+        current_size = len(text_bytes)
+            
+        self.lbl_capacity.setText(f"Size: {format_file_size(current_size)}")
+            
+    
+    def create_file_payload_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(5, 10, 5, 10)  # Balanced top/bottom spacing
+        layout.setSpacing(6)
+        
+        self.payload_file_path = QLineEdit()
+        self.payload_file_path.setPlaceholderText("Path to secret file...")
+        self.payload_file_path.hide()
+        
+        self.attachment_widget = AttachmentDropWidget()
+        # self.attachment_widget.fileSelected.connect(self.on_file_attach_selected)
+        self.attachment_widget.fileCleared.connect(self.payload_file_path.clear)
+
+        # self.attachment_widget.requestBrowse.connect(self.browse_payload_file)
+
+        # Default hint: prefer text-mode files for File Attachment techniques
+        try:
+            self.attachment_widget.empty_label.setText("Drag & Drop\n(Text files only: .txt, .md, .csv, ...)")
+        except Exception:
+            pass
+
+        layout.addWidget(self.attachment_widget, 1)
+        layout.addWidget(self.payload_file_path, 0)
+        
+        return tab
+       
+    
         
     
