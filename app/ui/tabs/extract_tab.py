@@ -361,7 +361,7 @@ class ExtractTab(QWidget):
         self.lbl_key = QLabel("Key Type:")
         self.enc_combo = QComboBox()
         self.enc_combo.addItem("Password (AES-256)", "password")
-        self.enc_combo.addItem("Public Key (RSA-3072)", "public")
+        self.enc_combo.addItem("Private Key (RSA-3072)", "private")
         self.enc_combo.setItemData(0, "Use a passphrase to encrypt the payload", tt)
         self.enc_combo.setItemData(1, "Use RSA public key to encrypt the payload", tt)
         
@@ -372,7 +372,7 @@ class ExtractTab(QWidget):
 
         self.enc_stack = QStackedWidget()
         self.enc_stack.addWidget(self.create_password_page())
-        self.enc_stack.addWidget(self.create_public_key_page())
+        self.enc_stack.addWidget(self.create_private_key_page())
         
         layout.addWidget(self.enc_stack)
         self.encryption_box.setLayout(layout)
@@ -458,28 +458,28 @@ class ExtractTab(QWidget):
         action.triggered.connect(toggle)
         
         
-    def create_public_key_page(self):
+    def create_private_key_page(self):
         page = QWidget()
         layout = QVBoxLayout(page) 
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.public_key_edit = QLineEdit()
-        self.public_key_edit.setPlaceholderText("Path to public key...")
-        self.public_key_edit.hide()
-        layout.addWidget(self.public_key_edit) 
+        self.private_key_edit = QLineEdit()
+        self.private_key_edit.setPlaceholderText("Path to public key...")
+        self.private_key_edit.hide()
+        layout.addWidget(self.private_key_edit) 
 
         # Attachment widget for public key (accept .pem by default)
-        self.pubkey_attachment = AttachmentDropWidget(allowed_extensions='.pem')
+        self.prikey_attachment = AttachmentDropWidget(allowed_extensions='.pem')
         
         try:
-            self.pubkey_attachment.empty_label.setText("Import Public Key\n(.pem files)")
+            self.prikey_attachment.empty_label.setText("Import Private Key\n(.pem files)")
         except Exception:
             pass
 
         # self.pubkey_attachment.requestBrowse.connect(self.browse_public_key)
         # self.pubkey_attachment.fileSelected.connect(self.on_public_key_selected)
 
-        layout.addWidget(self.pubkey_attachment)
+        layout.addWidget(self.prikey_attachment)
 
         return page
     

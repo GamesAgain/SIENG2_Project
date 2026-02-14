@@ -32,7 +32,6 @@ from PyQt6.QtWidgets import (
 
 from app.core.stego.lsb_plus.engine.noise_predictor import adjust_capacity_for_pixel
 from app.core.stego.lsb_plus.engine.pixel_order import build_pixel_order
-from app.core.stego.metadata_engine.metadata import MetadataEditorWidget
 from app.ui.components.loco_file import LocoFileTile
 
 try:
@@ -541,37 +540,11 @@ class EmbedTab(QWidget):
             self.standalone_content_stack.setCurrentIndex(0)
             
     def switch_to_metadata_mode(self):
-        self.payload_stack.setCurrentIndex(1) # แสดงหน้า Preview ฝั่งซ้าย
+        self.payload_stack.setCurrentIndex(1)
+        
         self.payload_main_group.setTitle("Carrier Preview")
-        self.preview_stack.setCurrentIndex(PAGE_METADATA) # แสดงหน้า Editor ฝั่งขวา
         
-        # กำหนด Placeholder
-        self.carrier_edit.setPlaceholderText("Select file to edit metadata...")
-        
-        # เชื่อมต่อปุ่ม Browse (สำคัญ!)
-        try: self.carrier_browse_btn.clicked.disconnect()
-        except: pass
-        self.carrier_browse_btn.clicked.connect(self.browse_metadata_file)
-        
-        # ตั้งค่า Attachment Widget ให้รองรับไฟล์สื่อ
-        self.attachment_widget.set_allowed_extensions({'.jpg', '.jpeg', '.png', '.mp3'})
-        self.attachment_widget.empty_label.setText("Drag & Drop\n(JPG, PNG, MP3)")
-        
-        
-    def browse_metadata_file(self):
-        f, _ = QFileDialog.getOpenFileName(
-            self, "Select File", "", "Media Files (*.jpg *.jpeg *.png *.mp3)"
-        )
-        if f:
-            self.current_image_path = f
-            self.carrier_edit.setText(f)
-            
-            # อัปเดต Preview ฝั่งซ้าย (ถ้ามีฟังก์ชันอยู่แล้ว)
-            # self._load_image_preview(f) 
-            
-            # --- เรียก Engine ฝั่งขวาให้ทำงาน ---
-            if hasattr(self, 'metadata_editor'):
-                self.metadata_editor.load_file(f)
+        self.preview_stack.setCurrentIndex(PAGE_METADATA)
         
         
 
@@ -2224,15 +2197,14 @@ class EmbedTab(QWidget):
         return page
     
     def create_metadata_page(self):
-        # สร้าง Instance ของ Editor engine
-        self.metadata_editor = MetadataEditorWidget()
         
-        # ใส่ลงใน GroupBox หรือ Return กลับไปตรงๆ ก็ได้
         box = QGroupBox("Metadata Editor")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 10, 0, 0)
+        tab = QTabWidget()
+        tab.addTab(QWidget(), "General Info")
+        tab.addTab(QWidget(), "Specific Info")
+        tab.addTab(QWidget(), "Custom Tags")
         
-        layout.addWidget(self.metadata_editor)
+        
         
         return box
     
