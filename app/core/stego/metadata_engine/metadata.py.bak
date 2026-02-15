@@ -1,101 +1,25 @@
-import sys
 import os
 import json
 import shutil
-from io import BytesIO
-
-# GUI Framework
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QListWidget, QTabWidget, QFormLayout, QLineEdit, QTextEdit,
-                             QPushButton, QLabel, QFileDialog, QMessageBox, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QSplitter, QGroupBox, QStackedWidget, QFrame, QComboBox)
-from PyQt6.QtCore import Qt, QByteArray
-from PyQt6.QtGui import QIcon, QPixmap, QImage
-
-# Logic Libraries
 from PIL import Image, PngImagePlugin
 import piexif
-# import piexif.helper # ไม่จำเป็นต้องใช้แล้ว เพราะเราเขียน Header เองเพื่อความชัวร์
+import piexif.helper
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TIT2, TPE1, TCOP, COMM, TDRC, TALB, TRCK, TCON, TCOM, TPOS, TSSE, TXXX, APIC
 
-# ==========================================
-# PART 0: STYLING (DARK MODE)
-# ==========================================
-DARK_STYLE = """
-QMainWindow, QDialog {
-    background-color: #2b2b2b;
-    color: #e0e0e0;
-    font-family: 'Segoe UI', sans-serif;
-    font-size: 10pt;
-}
-QWidget {
-    color: #e0e0e0;
-}
-QGroupBox {
-    border: 1px solid #555;
-    border-radius: 5px;
-    margin-top: 10px;
-    font-weight: bold;
-    color: #bbb;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 5px;
-}
-QLineEdit, QTextEdit, QListWidget, QComboBox, QTableWidget {
-    background-color: #3c3f41;
-    border: 1px solid #555;
-    border-radius: 4px;
-    color: #fff;
-    padding: 5px;
-}
-QLineEdit:focus, QTextEdit:focus {
-    border: 1px solid #3daee9;
-}
-QHeaderView::section {
-    background-color: #333;
-    color: #fff;
-    padding: 4px;
-    border: 1px solid #555;
-}
-QPushButton {
-    background-color: #3c3f41;
-    border: 1px solid #555;
-    border-radius: 4px;
-    padding: 6px 12px;
-    color: #fff;
-}
-QPushButton:hover {
-    background-color: #444;
-    border: 1px solid #3daee9;
-}
-QTabBar::tab {
-    background: #1e1e1e;
-    color: #777;
-    padding: 8px 20px;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-    border: 1px solid #333;
-}
-QTabBar::tab:selected {
-    background: #444444;
-    color: #fff;
-    border-top: 2px solid #3daee9;
-}
-QMessageBox {
-    background-color: #2b2b2b;
-    color: #fff;
-}
-"""
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QFormLayout, 
+    QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, 
+    QTableWidget, QTableWidgetItem, QHeaderView, QStackedWidget, 
+    QFrame, QFileDialog
+)
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 
 # ==========================================
-# PART 1: LOGIC HANDLER (BACKEND)
+# 1. BACKEND LOGIC (Copy from Original)
 # ==========================================
 class MetadataHandler:
-    """คลาสสำหรับจัดการการอ่านและบันทึกไฟล์ แยกจาก GUI"""
-
     @staticmethod
     def get_file_type(filepath):
         ext = os.path.splitext(filepath)[1].lower()
@@ -105,14 +29,19 @@ class MetadataHandler:
         return None
 
     @staticmethod
+    def str_to_rational(s):
+        try:
+            if '/' in s:
+                n, d = map(int, s.split('/'))
+                return (n, d)
+            val = float(s)
+            return (int(val * 100), 100)
+        except:
+            return (0, 1)
+
+    @staticmethod
     def _decode_bytes(b_data):
-        """
-        ฟังก์ชันอัจฉริยะสำหรับถอดรหัสข้อมูลไบต์ (ป้องกันภาษาต่างดาว/Mojibake)
-        รองรับทั้ง Header มาตรฐาน EXIF และการเดา Encoding
-        """
         if not b_data: return ""
-        
-        # 1. ลองถอดตาม Header มาตรฐาน EXIF
         if b_data.startswith(b'UNICODE\x00'):
             try: return b_data[8:].decode('utf-16').rstrip('\x00')
             except: pass
@@ -120,36 +49,21 @@ class MetadataHandler:
             try: return b_data[8:].decode('utf-8').rstrip('\x00')
             except: pass
             
-        # 2. ถ้าไม่มี Header หรือถอดไม่ออก ให้ลอง Brute-force หลายๆ แบบ
         decoders = ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'cp1252']
         for enc in decoders:
             try:
-                # ลองถอดรหัส
                 val = b_data.decode(enc).rstrip('\x00')
-                # เช็คดูว่าหน้าตาเหมือน JSON ไหม (ต้องเริ่มด้วย { และจบด้วย })
-                if val.strip().startswith('{') and val.strip().endswith('}'):
-                    return val
-                # หรือถ้าเป็น UTF-8 และอ่านรู้เรื่องก็คืนค่าเลย
-                if enc == 'utf-8': 
-                    return val
-            except:
-                continue
-        
-        # Fallback: ถ้าจนปัญญาจริงๆ ให้คืนค่าแบบ ignore errors
+                if val.strip().startswith('{') and val.strip().endswith('}'): return val
+                if enc == 'utf-8': return val
+            except: continue
         try: return b_data.decode('utf-8', errors='ignore')
         except: return str(b_data)
 
     @staticmethod
     def read_metadata(filepath):
         ftype = MetadataHandler.get_file_type(filepath)
-        data = {
-            "type": ftype,
-            "common": {"title": "", "artist": "", "copyright": "", "date": "", "software": "", "comment": ""},
-            "specific": {},
-            "custom": [],
-            "cover_art": None
-        }
-
+        data = {"type": ftype, "common": {}, "specific": {}, "custom": [], "cover_art": None}
+        
         try:
             if ftype == 'JPEG':
                 img = Image.open(filepath)
@@ -158,111 +72,77 @@ class MetadataHandler:
                 except:
                     exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-                def get_str(d, key):
-                    val = d.get(key, b'')
-                    if isinstance(val, bytes):
-                        # ใช้ฟังก์ชันใหม่ช่วยถอดรหัส
-                        return MetadataHandler._decode_bytes(val)
-                    return str(val)
-
-                data["common"]["title"] = get_str(exif_dict["0th"], piexif.ImageIFD.ImageDescription)
-                data["common"]["artist"] = get_str(exif_dict["0th"], piexif.ImageIFD.Artist)
-                data["common"]["copyright"] = get_str(exif_dict["0th"], piexif.ImageIFD.Copyright)
-                data["common"]["software"] = get_str(exif_dict["0th"], piexif.ImageIFD.Software)
-                data["common"]["date"] = get_str(exif_dict["0th"], piexif.ImageIFD.DateTime)
-
-                # Specific
-                data["specific"]["Camera Model"] = get_str(exif_dict["0th"], piexif.ImageIFD.Model)
-                data["specific"]["ISO Speed"] = str(exif_dict["Exif"].get(piexif.ExifIFD.ISOSpeedRatings, ""))
+                def g_s(d, k): return MetadataHandler._decode_bytes(d.get(k, b''))
                 
-                # Rational helper
-                def get_rational(d, key):
-                    val = d.get(key)
-                    if isinstance(val, tuple) and len(val) == 2:
-                        return f"{val[0]}/{val[1]}" if val[1] != 0 else str(val[0])
-                    return str(val) if val else ""
-
-                data["specific"]["Shutter Speed"] = get_rational(exif_dict["Exif"], piexif.ExifIFD.ExposureTime)
-                data["specific"]["F-Number"] = get_rational(exif_dict["Exif"], piexif.ExifIFD.FNumber)
-                data["specific"]["GPS Latitude"] = "Present" if piexif.GPSIFD.GPSLatitude in exif_dict.get("GPS", {}) else ""
-
-                # --- Custom Tag Handling via UserComment JSON ---
-                raw_comment = exif_dict["Exif"].get(piexif.ExifIFD.UserComment, b'')
-                comment_str = MetadataHandler._decode_bytes(raw_comment)
+                data["common"] = {
+                    "title": g_s(exif_dict["0th"], piexif.ImageIFD.ImageDescription),
+                    "artist": g_s(exif_dict["0th"], piexif.ImageIFD.Artist),
+                    "copyright": g_s(exif_dict["0th"], piexif.ImageIFD.Copyright),
+                    "software": g_s(exif_dict["0th"], piexif.ImageIFD.Software),
+                    "date": g_s(exif_dict["0th"], piexif.ImageIFD.DateTime),
+                    "comment": ""
+                }
                 
-                try:
-                    # พยายามหา JSON structure
-                    if "custom_tags" in comment_str:
-                        # หาปีกกาเปิดปิด เพื่อกรองขยะที่อาจติดมา
-                        start = comment_str.find('{')
-                        end = comment_str.rfind('}') + 1
+                def g_r(d, k):
+                    v = d.get(k)
+                    return f"{v[0]}/{v[1]}" if isinstance(v, tuple) and v[1] != 0 else str(v or "")
+
+                data["specific"] = {
+                    "Camera Model": g_s(exif_dict["0th"], piexif.ImageIFD.Model),
+                    "ISO Speed": str(exif_dict["Exif"].get(piexif.ExifIFD.ISOSpeedRatings, "")),
+                    "Shutter Speed": g_r(exif_dict["Exif"], piexif.ExifIFD.ExposureTime),
+                    "F-Number": g_r(exif_dict["Exif"], piexif.ExifIFD.FNumber),
+                    "GPS Latitude": str(exif_dict.get("GPS", {}).get(piexif.GPSIFD.GPSLatitude, "")),
+                    "GPS Longitude": str(exif_dict.get("GPS", {}).get(piexif.GPSIFD.GPSLongitude, ""))
+                }
+
+                raw_comm = exif_dict["Exif"].get(piexif.ExifIFD.UserComment, b'')
+                comm_str = MetadataHandler._decode_bytes(raw_comm)
+                if "custom_tags" in comm_str:
+                    try:
+                        start = comm_str.find('{')
+                        end = comm_str.rfind('}') + 1
                         if start != -1 and end != -1:
-                            clean_json = comment_str[start:end]
-                            json_obj = json.loads(clean_json)
-                            
-                            if "real_comment" in json_obj:
-                                data["common"]["comment"] = json_obj["real_comment"]
-                            if "custom_tags" in json_obj:
-                                for k, v in json_obj["custom_tags"].items():
+                            js = json.loads(comm_str[start:end])
+                            data["common"]["comment"] = js.get("real_comment", "")
+                            if "custom_tags" in js:
+                                for k, v in js["custom_tags"].items():
                                     data["custom"].append((k, str(v)))
-                        else:
-                             data["common"]["comment"] = comment_str
-                    else:
-                        data["common"]["comment"] = comment_str
-                except:
-                    # ถ้า Parse JSON พัง ให้แสดงเป็น Text ธรรมดา
-                    data["common"]["comment"] = comment_str
+                        else: data["common"]["comment"] = comm_str
+                    except: data["common"]["comment"] = comm_str
+                else: data["common"]["comment"] = comm_str
 
             elif ftype == 'PNG':
                 img = Image.open(filepath)
                 info = img.info
-                
-                data["common"]["title"] = info.get("Title", "")
-                data["common"]["artist"] = info.get("Author", "")
-                data["common"]["copyright"] = info.get("Copyright", "")
-                data["common"]["software"] = info.get("Software", "")
-                data["common"]["date"] = info.get("Creation Time", "")
-                data["common"]["comment"] = info.get("Description", "") or info.get("Comment", "")
-
-                data["specific"]["Gamma"] = str(info.get("gamma", ""))
-                data["specific"]["DPI"] = str(info.get("dpi", ""))
-                data["specific"]["Bit Depth"] = str(img.mode)
-
-                exclude = ["Title", "Author", "Copyright", "Software", "Creation Time", "Description", "Comment", "interlace", "gamma", "dpi", "transparency", "aspect", "exif", "icc_profile"]
+                data["common"] = {
+                    "title": info.get("Title", ""), "artist": info.get("Author", ""),
+                    "copyright": info.get("Copyright", ""), "software": info.get("Software", ""),
+                    "date": info.get("Creation Time", ""), "comment": info.get("Description", "") or info.get("Comment", "")
+                }
+                data["specific"] = {"Gamma": str(info.get("gamma", "")), "DPI": str(info.get("dpi", "")), "Bit Depth": str(img.mode)}
+                exclude = ["Title", "Author", "Copyright", "Software", "Creation Time", "Description", "Comment", "interlace", "gamma", "dpi", "exif", "icc_profile", "transparency", "aspect"]
                 for k, v in info.items():
-                    if k not in exclude:
-                        data["custom"].append((k, str(v)))
+                    if k not in exclude: data["custom"].append((k, str(v)))
 
             elif ftype == 'MP3':
                 audio = ID3(filepath)
-                
-                def get_id3(key): return str(audio.get(key, ""))
-                
-                data["common"]["title"] = get_id3("TIT2")
-                data["common"]["artist"] = get_id3("TPE1")
-                data["common"]["copyright"] = get_id3("TCOP")
-                data["common"]["date"] = get_id3("TDRC")
-                data["common"]["software"] = get_id3("TSSE")
-                
+                def g_i(k): return str(audio.get(k, ""))
+                data["common"] = {
+                    "title": g_i("TIT2"), "artist": g_i("TPE1"), "copyright": g_i("TCOP"),
+                    "date": g_i("TDRC"), "software": g_i("TSSE"),
+                    "comment": ""
+                }
                 comm = audio.get("COMM::eng") or audio.get("COMM")
                 data["common"]["comment"] = comm.text[0] if comm else ""
 
-                data["specific"]["Album Name"] = get_id3("TALB")
-                data["specific"]["Track Number"] = get_id3("TRCK")
-                data["specific"]["Genre"] = get_id3("TCON")
-                data["specific"]["Composer"] = get_id3("TCOM")
-                data["specific"]["Disc Number"] = get_id3("TPOS")
-
-                apic = audio.get("APIC:")
-                if apic:
-                    data["cover_art"] = apic.data
-
-                for frame in audio.getall("TXXX"):
-                    data["custom"].append((frame.desc, frame.text[0]))
-
-        except Exception as e:
-            print(f"Read Error: {e}")
-        
+                data["specific"] = {
+                    "Album Name": g_i("TALB"), "Track Number": g_i("TRCK"),
+                    "Genre": g_i("TCON"), "Composer": g_i("TCOM"), "Disc Number": g_i("TPOS")
+                }
+                if audio.get("APIC:"): data["cover_art"] = audio.get("APIC:").data
+                for f in audio.getall("TXXX"): data["custom"].append((f.desc, f.text[0]))
+        except Exception as e: print(f"Read Error: {e}")
         return data
 
     @staticmethod
@@ -276,56 +156,47 @@ class MetadataHandler:
                 except:
                     exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-                def to_bytes(s): return s.encode('utf-8') if s else b""
-
-                exif_dict["0th"][piexif.ImageIFD.ImageDescription] = to_bytes(data["common"]["title"])
-                exif_dict["0th"][piexif.ImageIFD.Artist] = to_bytes(data["common"]["artist"])
-                exif_dict["0th"][piexif.ImageIFD.Copyright] = to_bytes(data["common"]["copyright"])
-                exif_dict["0th"][piexif.ImageIFD.Software] = to_bytes(data["common"]["software"])
+                def t_b(s): return s.encode('utf-8') if s else b""
+                
+                exif_dict["0th"][piexif.ImageIFD.ImageDescription] = t_b(data["common"]["title"])
+                exif_dict["0th"][piexif.ImageIFD.Artist] = t_b(data["common"]["artist"])
+                exif_dict["0th"][piexif.ImageIFD.Copyright] = t_b(data["common"]["copyright"])
+                exif_dict["0th"][piexif.ImageIFD.Software] = t_b(data["common"]["software"])
                 if data["common"]["date"]:
-                    exif_dict["0th"][piexif.ImageIFD.DateTime] = to_bytes(data["common"]["date"])
+                    exif_dict["0th"][piexif.ImageIFD.DateTime] = t_b(data["common"]["date"])
+                
+                # Specific
+                s_data = data["specific"]
+                if "Camera Model" in s_data: exif_dict["0th"][piexif.ImageIFD.Model] = s_data["Camera Model"].encode('utf-8')
+                if "ISO Speed" in s_data:
+                    try: exif_dict["Exif"][piexif.ExifIFD.ISOSpeedRatings] = int(s_data["ISO Speed"])
+                    except: pass
+                if "Shutter Speed" in s_data: exif_dict["Exif"][piexif.ExifIFD.ExposureTime] = MetadataHandler.str_to_rational(s_data["Shutter Speed"])
+                if "F-Number" in s_data: exif_dict["Exif"][piexif.ExifIFD.FNumber] = MetadataHandler.str_to_rational(s_data["F-Number"])
 
-                # --- Save Custom Tags via JSON in UserComment ---
+                # Custom Tags
                 custom_dict = {k: v for k, v in data["custom"]}
-                
-                # Logic: สร้าง JSON เสมอถ้ามี custom tags หรือ comment
-                # ใช้ ensure_ascii=False เพื่อให้ภาษาไทยไม่เพี้ยนเป็น \uXXXX
-                if custom_dict:
-                    payload = {
-                        "real_comment": data["common"]["comment"],
-                        "custom_tags": custom_dict
-                    }
+                if custom_dict or data["common"]["comment"]:
+                    payload = {"real_comment": data["common"]["comment"], "custom_tags": custom_dict}
                     json_str = json.dumps(payload, ensure_ascii=False)
+                    header = b'UNICODE\x00'
+                    body = json_str.encode('utf-16-le')
+                    exif_dict["Exif"][piexif.ExifIFD.UserComment] = header + body
                 else:
-                    # ถ้าไม่มี custom tag บันทึกแค่ comment (แต่ใส่ใน JSON structure เพื่อความสม่ำเสมอ หรือจะใส่ plain text ก็ได้)
-                    # เพื่อความง่าย ถ้าไม่มี custom tag เราบันทึก comment ตรงๆ เพื่อให้โปรแกรมอื่นอ่านง่าย
-                    json_str = data["common"]["comment"]
-
-                # เขียน Header แบบ Manual (เสถียรที่สุด)
-                header = b'UNICODE\x00'
-                # ต้อง encode เป็น utf-16le สำหรับ EXIF Unicode
-                body = json_str.encode('utf-16le')
-                user_comment = header + body
+                    exif_dict["Exif"][piexif.ExifIFD.UserComment] = b''
                 
-                exif_dict["Exif"][piexif.ExifIFD.UserComment] = user_comment
-                
-                exif_bytes = piexif.dump(exif_dict)
-                img.save(filepath, exif=exif_bytes)
+                img.save(filepath, exif=piexif.dump(exif_dict))
 
             elif ftype == 'PNG':
                 img = Image.open(filepath)
-                metadata = PngImagePlugin.PngInfo()
-
-                if data["common"]["title"]: metadata.add_text("Title", data["common"]["title"])
-                if data["common"]["artist"]: metadata.add_text("Author", data["common"]["artist"])
-                if data["common"]["copyright"]: metadata.add_text("Copyright", data["common"]["copyright"])
-                if data["common"]["software"]: metadata.add_text("Software", data["common"]["software"])
-                if data["common"]["comment"]: metadata.add_text("Description", data["common"]["comment"])
-                
-                for k, v in data["custom"]:
-                    metadata.add_text(k, v)
-
-                img.save(filepath, pnginfo=metadata)
+                meta = PngImagePlugin.PngInfo()
+                if data["common"]["title"]: meta.add_text("Title", data["common"]["title"])
+                if data["common"]["artist"]: meta.add_text("Author", data["common"]["artist"])
+                if data["common"]["copyright"]: meta.add_text("Copyright", data["common"]["copyright"])
+                if data["common"]["software"]: meta.add_text("Software", data["common"]["software"])
+                if data["common"]["comment"]: meta.add_text("Description", data["common"]["comment"])
+                for k, v in data["custom"]: meta.add_text(k, v)
+                img.save(filepath, pnginfo=meta)
 
             elif ftype == 'MP3':
                 audio = ID3(filepath)
@@ -335,388 +206,224 @@ class MetadataHandler:
                 audio.add(TDRC(encoding=3, text=data["common"]["date"]))
                 audio.add(TSSE(encoding=3, text=data["common"]["software"]))
                 audio.add(COMM(encoding=3, lang='eng', desc='', text=data["common"]["comment"]))
-                
-                s_data = data["specific"]
-                if s_data.get("Album Name"): audio.add(TALB(encoding=3, text=s_data["Album Name"]))
-                if s_data.get("Track Number"): audio.add(TRCK(encoding=3, text=s_data["Track Number"]))
-                if s_data.get("Genre"): audio.add(TCON(encoding=3, text=s_data["Genre"]))
-                if s_data.get("Composer"): audio.add(TCOM(encoding=3, text=s_data["Composer"]))
-                if s_data.get("Disc Number"): audio.add(TPOS(encoding=3, text=s_data["Disc Number"]))
-
-                # Cover Art Updating
-                if "cover_art_data" in data and data["cover_art_data"] is not None:
-                    audio.add(APIC(
-                        encoding=3, # 3 is UTF-8
-                        mime='image/jpeg', # Defaulting to jpeg, but works generally
-                        type=3, # 3 is front cover
-                        desc=u'Cover',
-                        data=data["cover_art_data"]
-                    ))
-
-                # Custom (TXXX)
+                s = data["specific"]
+                if s.get("Album Name"): audio.add(TALB(encoding=3, text=s.get("Album Name")))
+                if s.get("Track Number"): audio.add(TRCK(encoding=3, text=s.get("Track Number")))
+                if s.get("Genre"): audio.add(TCON(encoding=3, text=s.get("Genre")))
+                if s.get("Composer"): audio.add(TCOM(encoding=3, text=s.get("Composer")))
+                if s.get("Disc Number"): audio.add(TPOS(encoding=3, text=s.get("Disc Number")))
+                if "cover_art_data" in data: audio.add(APIC(encoding=3, mime='image/jpeg', type=3, data=data["cover_art_data"]))
                 audio.delall("TXXX")
-                for k, v in data["custom"]:
-                    audio.add(TXXX(encoding=3, desc=k, text=v))
-                
+                for k, v in data["custom"]: audio.add(TXXX(encoding=3, desc=k, text=v))
                 audio.save()
-
             return True, "Saved Successfully"
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return False, str(e)
+        except Exception as e: return False, str(e)
 
 # ==========================================
-# PART 2: GUI (FRONTEND)
+# 2. FRONTEND WIDGET (API for embedding)
 # ==========================================
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Metadata Master Pro (Python/PyQt6)")
-        self.resize(1100, 750)
-        self.setStyleSheet(DARK_STYLE)
-
+class MetadataEditorWidget(QWidget):
+    """
+    Engine Widget: นำไปแปะใน GUI หลักได้เลย
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.current_file = None
-        self.current_data = None
-        self.pending_cover_art = None # Store binary data of new cover
-        self.widgets_specific_refs = {} 
+        self.pending_cover_art = None
+        self.init_ui()
 
-        self.setup_ui()
-
-    def setup_ui(self):
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QHBoxLayout(main_widget)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # --- Left Panel ---
-        left_panel = QGroupBox(" File Manager ")
-        left_layout = QVBoxLayout()
-        self.file_list = QListWidget()
-        self.file_list.itemClicked.connect(self.load_file_to_editor)
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         
-        btn_add = QPushButton(" (+) Add Files ")
-        btn_add.setStyleSheet("background-color: #0078d4; color: white; font-weight: bold;")
-        btn_add.clicked.connect(self.action_add_files)
-        
-        btn_clear = QPushButton(" Clear List ")
-        btn_clear.clicked.connect(lambda: self.file_list.clear())
-
-        left_layout.addWidget(btn_add)
-        left_layout.addWidget(self.file_list)
-        left_layout.addWidget(btn_clear)
-        left_panel.setLayout(left_layout)
-
-        # --- Right Panel ---
-        right_panel = QGroupBox(" Metadata Editor ")
-        right_layout = QVBoxLayout()
-
+        # Tabs
         self.tabs = QTabWidget()
-        self.tab_general = self.setup_general_tab()
-        self.tab_specific = self.setup_specific_tab()
-        self.tab_custom = self.setup_custom_tab()
+        self.tab_gen = self.setup_gen_tab()
+        self.tab_spec = self.setup_spec_tab()
+        self.tab_cust = self.setup_cust_tab()
         
-        self.tabs.addTab(self.tab_general, "General Info")
-        self.tabs.addTab(self.tab_specific, "Specific")
-        self.tabs.addTab(self.tab_custom, "Custom Tags")
+        self.tabs.addTab(self.tab_gen, "General Info")
+        self.tabs.addTab(self.tab_spec, "Specific / Tech")
+        self.tabs.addTab(self.tab_cust, "Custom Tags")
+        layout.addWidget(self.tabs)
+        
+        # Save Button
+        self.btn_save = QPushButton("SAVE METADATA")
+        self.btn_save.setMinimumHeight(40)
+        self.btn_save.setStyleSheet("background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px;")
+        self.btn_save.setEnabled(False) 
+        self.btn_save.clicked.connect(self.save_file)
+        layout.addWidget(self.btn_save)
 
-        right_layout.addWidget(self.tabs)
+    # --- Setup Tabs (เหมือนเดิม) ---
+    def setup_gen_tab(self):
+        w = QWidget()
+        l = QVBoxLayout()
+        f = QFormLayout()
+        f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.t_title, self.t_artist, self.t_copy, self.t_date, self.t_soft = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
+        for t in [self.t_title, self.t_artist, self.t_copy, self.t_date, self.t_soft]:
+            t.setStyleSheet("background-color: #252525; color: white; padding: 5px; border: 1px solid #555;")
+        f.addRow("Title:", self.t_title)
+        f.addRow("Artist:", self.t_artist)
+        f.addRow("Copyright:", self.t_copy)
+        f.addRow("Date Created:", self.t_date)
+        f.addRow("Software:", self.t_soft)
+        l.addLayout(f)
+        l.addWidget(QLabel("Description / Comment:"))
+        self.t_comm = QTextEdit()
+        self.t_comm.setMaximumHeight(100)
+        self.t_comm.setStyleSheet("background-color: #252525; color: white; border: 1px solid #555;")
+        l.addWidget(self.t_comm)
+        l.addStretch()
+        w.setLayout(l)
+        return w
 
-        self.btn_save = QPushButton(" SAVE METADATA ")
-        self.btn_save.setStyleSheet("background-color: #2E7D32; color: white; font-weight: bold; font-size: 16px; padding: 12px;")
-        self.btn_save.clicked.connect(self.save_current_file)
-        
-        right_layout.addWidget(self.btn_save)
-        right_panel.setLayout(right_layout)
+    def setup_spec_tab(self):
+        w = QWidget()
+        l = QVBoxLayout()
+        self.stack = QStackedWidget()
+        self.stack.addWidget(QLabel("No File Selected")) # 0
+        self.w_jpeg = self.create_page(["Camera Model", "ISO Speed", "Shutter Speed", "F-Number", "GPS Latitude", "GPS Longitude"]) # 1
+        self.w_mp3 = self.create_mp3_page() # 2
+        self.w_png = self.create_page(["Gamma", "DPI", "Bit Depth"]) # 3
+        self.stack.addWidget(self.w_jpeg['page'])
+        self.stack.addWidget(self.w_mp3['page'])
+        self.stack.addWidget(self.w_png['page'])
+        l.addWidget(self.stack)
+        w.setLayout(l)
+        return w
 
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(splitter)
-
-    def setup_general_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        form_layout = QFormLayout()
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        
-        self.txt_title = QLineEdit()
-        self.txt_artist = QLineEdit()
-        self.txt_copyright = QLineEdit()
-        self.txt_date = QLineEdit()
-        self.txt_software = QLineEdit()
-        self.txt_date.setPlaceholderText("YYYY:MM:DD HH:MM:SS")
-        
-        form_layout.addRow("Title:", self.txt_title)
-        form_layout.addRow("Artist:", self.txt_artist)
-        form_layout.addRow("Copyright:", self.txt_copyright)
-        form_layout.addRow("Date Created:", self.txt_date)
-        form_layout.addRow("Software:", self.txt_software)
-        layout.addLayout(form_layout)
-
-        layout.addWidget(QLabel("Description / Comment:"))
-        self.txt_comment = QTextEdit()
-        self.txt_comment.setMaximumHeight(100)
-        layout.addWidget(self.txt_comment)
-        layout.addStretch()
-        widget.setLayout(layout)
-        return widget
-
-    def setup_specific_tab(self):
-        container = QWidget()
-        layout = QVBoxLayout()
-        self.stack_specific = QStackedWidget()
-        
-        self.widgets_jpeg = self.create_jpeg_page()
-        self.widgets_mp3 = self.create_mp3_page()
-        self.widgets_png = self.create_png_page()
-        
-        self.stack_specific.addWidget(QLabel("Select a file to view specific details."))
-        self.stack_specific.addWidget(self.widgets_jpeg['page_widget'])
-        self.stack_specific.addWidget(self.widgets_mp3['page_widget'])
-        self.stack_specific.addWidget(self.widgets_png['page_widget'])
-        
-        layout.addWidget(self.stack_specific)
-        container.setLayout(layout)
-        return container
-
-    def create_jpeg_page(self):
-        page = QWidget()
-        form = QFormLayout()
-        widgets = {'page_widget': page}
-        
-        # Read Only
-        for field in ["Camera Model", "ISO Speed", "Shutter Speed", "F-Number"]:
+    def create_page(self, fields):
+        p = QWidget()
+        f = QFormLayout()
+        widgets = {'page': p}
+        for field in fields:
             inp = QLineEdit()
-            inp.setReadOnly(True)
-            inp.setStyleSheet("color: #888; background: #252525;")
-            form.addRow(field + ":", inp)
+            inp.setStyleSheet("background-color: #252525; color: white; padding: 5px; border: 1px solid #555;")
+            f.addRow(field + ":", inp)
             widgets[field] = inp
-
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        form.addRow(line)
-
-        # Writable
-        for field in ["GPS Latitude", "GPS Longitude"]:
-            inp = QLineEdit()
-            form.addRow(field + ":", inp)
-            widgets[field] = inp
-            
-        page.setLayout(form)
+        p.setLayout(f)
         return widgets
 
     def create_mp3_page(self):
-        page = QWidget()
-        layout = QVBoxLayout()
-        form = QFormLayout()
-        widgets = {'page_widget': page}
-
-        # Cover Art
-        self.lbl_cover_art = QLabel("No Cover Art")
-        self.lbl_cover_art.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_cover_art.setFixedSize(150, 150)
-        self.lbl_cover_art.setStyleSheet("border: 1px dashed #555; background-color: #1e1e1e;")
+        p = QWidget()
+        l = QVBoxLayout()
+        f = QFormLayout()
+        widgets = {'page': p}
         
-        btn_change_cover = QPushButton("Change Cover Art...")
-        btn_change_cover.clicked.connect(self.change_cover_art)
+        art_layout = QHBoxLayout()
+        self.lbl_art = QLabel("No Cover Art")
+        self.lbl_art.setFixedSize(120, 120)
+        self.lbl_art.setStyleSheet("border: 1px dashed #555; background-color: #1e1e1e;")
+        self.lbl_art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_art = QPushButton("Change Cover")
+        btn_art.clicked.connect(self.change_art)
+        art_layout.addStretch()
+        art_layout.addWidget(self.lbl_art)
+        art_layout.addWidget(btn_art)
+        art_layout.addStretch()
+        l.addLayout(art_layout)
         
-        cover_box = QHBoxLayout()
-        cover_box.addStretch()
-        cover_box.addWidget(self.lbl_cover_art)
-        cover_box.addWidget(btn_change_cover)
-        cover_box.addStretch()
-        layout.addLayout(cover_box)
-
-        # Fields
         for field in ["Album Name", "Track Number", "Genre", "Composer", "Disc Number"]:
             inp = QLineEdit()
-            form.addRow(field + ":", inp)
+            inp.setStyleSheet("background-color: #252525; color: white; padding: 5px; border: 1px solid #555;")
+            f.addRow(field + ":", inp)
             widgets[field] = inp
-            
-        layout.addLayout(form)
-        layout.addStretch()
-        page.setLayout(layout)
+        l.addLayout(f)
+        l.addStretch()
+        p.setLayout(l)
         return widgets
 
-    def create_png_page(self):
-        page = QWidget()
-        form = QFormLayout()
-        widgets = {'page_widget': page}
+    def setup_cust_tab(self):
+        w = QWidget()
+        l = QVBoxLayout()
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Key", "Value"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setStyleSheet("background-color: #252525; color: white; gridline-color: #444;")
+        btn_l = QHBoxLayout()
+        b_a = QPushButton("(+) Add Tag")
+        b_r = QPushButton("(-) Remove Selected")
+        for b in [b_a, b_r]: b.setStyleSheet("background-color: #444; color: white; padding: 5px;")
+        b_a.clicked.connect(lambda: self.table.insertRow(self.table.rowCount()))
+        b_r.clicked.connect(lambda: self.table.removeRow(self.table.currentRow()))
+        btn_l.addWidget(b_a)
+        btn_l.addWidget(b_r)
+        l.addWidget(self.table)
+        l.addLayout(btn_l)
+        w.setLayout(l)
+        return w
+
+    # --- API ที่ GUI หลักจะเรียกใช้ ---
+    def load_file(self, filepath):
+        """เรียกฟังก์ชันนี้เมื่อผู้ใช้เลือกไฟล์ใน GUI หลัก"""
+        if not os.path.exists(filepath): return
+        self.current_file = filepath
+        self.pending_cover_art = None
+        self.btn_save.setEnabled(True)
         
-        for field in ["Gamma", "Physical Size (DPI)", "Bit Depth"]:
-            inp = QLineEdit()
-            inp.setReadOnly(True)
-            inp.setStyleSheet("color: #888; background: #252525;")
-            form.addRow(field + ":", inp)
-            widgets[field] = inp
-            
-        page.setLayout(form)
-        return widgets
-
-    def setup_custom_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        self.table_custom = QTableWidget(0, 2)
-        self.table_custom.setHorizontalHeaderLabels(["Tag Name (Key)", "Value"])
-        self.table_custom.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        self.table_custom.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table_custom.setAlternatingRowColors(True)
+        d = MetadataHandler.read_metadata(filepath)
         
-        layout.addWidget(self.table_custom)
-
-        btn_layout = QHBoxLayout()
-        btn_add = QPushButton(" (+) Add New Tag ")
-        btn_add.setStyleSheet("background-color: #2E7D32;")
-        btn_add.clicked.connect(self.action_add_row)
+        self.t_title.setText(d["common"].get("title", ""))
+        self.t_artist.setText(d["common"].get("artist", ""))
+        self.t_copy.setText(d["common"].get("copyright", ""))
+        self.t_date.setText(d["common"].get("date", ""))
+        self.t_soft.setText(d["common"].get("software", ""))
+        self.t_comm.setText(d["common"].get("comment", ""))
         
-        btn_remove = QPushButton(" (-) Remove Selected ")
-        btn_remove.setStyleSheet("background-color: #C62828;")
-        btn_remove.clicked.connect(self.action_remove_row)
+        ftype = d["type"]
+        idx = 1 if ftype == 'JPEG' else 2 if ftype == 'MP3' else 3 if ftype == 'PNG' else 0
+        self.stack.setCurrentIndex(idx)
         
-        btn_layout.addWidget(btn_add)
-        btn_layout.addWidget(btn_remove)
-        layout.addLayout(btn_layout)
-        
-        widget.setLayout(layout)
-        return widget
-
-    def action_add_row(self):
-        row = self.table_custom.rowCount()
-        self.table_custom.insertRow(row)
-        self.table_custom.setItem(row, 0, QTableWidgetItem("NewKey"))
-        self.table_custom.setItem(row, 1, QTableWidgetItem(""))
-
-    def action_remove_row(self):
-        row = self.table_custom.currentRow()
-        if row >= 0: self.table_custom.removeRow(row)
-
-    def action_add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Files", "", "Media (*.jpg *.jpeg *.png *.mp3)")
-        for f in files:
-            ftype = MetadataHandler.get_file_type(f)
-            icon = "🎵" if ftype == 'MP3' else "🖼️"
-            self.file_list.addItem(f"{icon} {f}")
-
-    def load_file_to_editor(self, item):
-        try:
-            # ป้องกันกรณี item เป็น None
-            if not item: return
-
-            filepath = item.text()[2:].strip()
-            self.current_file = filepath
-            self.pending_cover_art = None # Reset pending cover
-            
-            # Read Data
-            self.current_data = MetadataHandler.read_metadata(filepath)
-            
-            # 1. General Tab
-            c = self.current_data["common"]
-            self.txt_title.setText(c["title"])
-            self.txt_artist.setText(c["artist"])
-            self.txt_copyright.setText(c["copyright"])
-            self.txt_date.setText(c["date"])
-            self.txt_software.setText(c["software"])
-            self.txt_comment.setText(c["comment"])
-
-            # 2. Specific Tab
-            ftype = self.current_data["type"]
-            s_data = self.current_data["specific"]
-            
-            if ftype == 'JPEG':
-                self.stack_specific.setCurrentIndex(1)
-                widgets = self.widgets_jpeg
-            elif ftype == 'MP3':
-                self.stack_specific.setCurrentIndex(2)
-                widgets = self.widgets_mp3
-                # Cover Art
-                if self.current_data.get("cover_art"):
+        w = [None, self.w_jpeg, self.w_mp3, self.w_png][idx]
+        if w:
+            for k, v in d["specific"].items(): 
+                if k in w: w[k].setText(v)
+            if ftype == 'MP3':
+                if d.get("cover_art"):
                     pix = QPixmap()
-                    pix.loadFromData(self.current_data["cover_art"])
-                    self.lbl_cover_art.setPixmap(pix.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio))
-                else:
-                    self.lbl_cover_art.setText("No Cover Art")
-            elif ftype == 'PNG':
-                self.stack_specific.setCurrentIndex(3)
-                widgets = self.widgets_png
-            
-            # เติมข้อมูลลง Widget (เฉพาะที่มีอยู่)
-            if ftype in ['JPEG', 'MP3', 'PNG']:
-                for k, val in s_data.items():
-                    if k in widgets and isinstance(widgets[k], QLineEdit):
-                        widgets[k].setText(val)
+                    pix.loadFromData(d["cover_art"])
+                    self.lbl_art.setPixmap(pix.scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio))
+                else: self.lbl_art.setText("No Cover Art")
 
-            # 3. Custom Tab
-            self.table_custom.setRowCount(0)
-            for k, v in self.current_data["custom"]:
-                r = self.table_custom.rowCount()
-                self.table_custom.insertRow(r)
-                self.table_custom.setItem(r, 0, QTableWidgetItem(str(k)))
-                self.table_custom.setItem(r, 1, QTableWidgetItem(str(v)))
+        self.table.setRowCount(0)
+        for k, v in d["custom"]:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(k))
+            self.table.setItem(r, 1, QTableWidgetItem(v))
 
-        except Exception as e:
-            print(f"UI Load Error: {e}")
+    def change_art(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.jpg *.png)")
+        if f:
+            with open(f, 'rb') as rb: self.pending_cover_art = rb.read()
+            pix = QPixmap(f)
+            self.lbl_art.setPixmap(pix.scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio))
 
-    def change_cover_art(self):
-        file, _ = QFileDialog.getOpenFileName(self, "Select Cover Image", "", "Images (*.jpg *.png)")
-        if file:
-            with open(file, 'rb') as f:
-                self.pending_cover_art = f.read()
-            
-            pix = QPixmap(file)
-            self.lbl_cover_art.setPixmap(pix.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio))
-
-    def save_current_file(self):
+    def save_file(self):
         if not self.current_file: return
-
-        save_data = {
+        data = {
             "common": {
-                "title": self.txt_title.text(),
-                "artist": self.txt_artist.text(),
-                "copyright": self.txt_copyright.text(),
-                "date": self.txt_date.text(),
-                "software": self.txt_software.text(),
-                "comment": self.txt_comment.toPlainText()
-            },
-            "specific": {},
-            "custom": []
+                "title": self.t_title.text(), "artist": self.t_artist.text(),
+                "copyright": self.t_copy.text(), "date": self.t_date.text(),
+                "software": self.t_soft.text(), "comment": self.t_comm.toPlainText()
+            }, "specific": {}, "custom": []
         }
-
-        # Specific
-        ftype = self.current_data["type"]
-        widgets = {}
-        if ftype == 'JPEG': widgets = self.widgets_jpeg
-        elif ftype == 'MP3': widgets = self.widgets_mp3
         
-        for k, w in widgets.items():
-            if isinstance(w, QLineEdit) and not w.isReadOnly():
-                save_data["specific"][k] = w.text()
-
-        # Cover Art Update (MP3)
-        if ftype == 'MP3' and self.pending_cover_art:
-            save_data["cover_art_data"] = self.pending_cover_art
-
-        # Custom
-        for r in range(self.table_custom.rowCount()):
-            k = self.table_custom.item(r, 0).text()
-            v = self.table_custom.item(r, 1).text()
-            if k: save_data["custom"].append((k, v))
-
-        success, msg = MetadataHandler.save_metadata(self.current_file, save_data)
+        idx = self.stack.currentIndex()
+        w = [None, self.w_jpeg, self.w_mp3, self.w_png][idx]
+        if w:
+            for k, obj in w.items():
+                if isinstance(obj, QLineEdit): data["specific"][k] = obj.text()
         
-        if success:
-            QMessageBox.information(self, "Success", f"Metadata Saved Successfully!\n{os.path.basename(self.current_file)}")
-            # Refresh data to ensure UI matches file
-            current_item = self.file_list.currentItem()
-            if current_item:
-                self.load_file_to_editor(current_item)
-        else:
-            QMessageBox.critical(self, "Error", msg)
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+        if idx == 2 and self.pending_cover_art: data["cover_art_data"] = self.pending_cover_art
+        for r in range(self.table.rowCount()):
+            k, v = self.table.item(r, 0), self.table.item(r, 1)
+            if k and v and k.text(): data["custom"].append((k.text(), v.text()))
+        
+        ok, msg = MetadataHandler.save_metadata(self.current_file, data)
+        if ok: 
+            QMessageBox.information(self, "Success", f"Metadata Saved!\n{os.path.basename(self.current_file)}")
+            self.load_file(self.current_file) # Refresh
+        else: QMessageBox.critical(self, "Error", msg)
