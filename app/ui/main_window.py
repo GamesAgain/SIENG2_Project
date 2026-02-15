@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from app.ui.styles import DARK_STYLE
 from app.ui.tabs.embed_tab import EmbedTab
 from app.ui.tabs.embed_tab_mock import EmbedTabMockUp
+from app.ui.tabs.extract_tab import ExtractTab
 
 # ============================================================================
 # MAIN APPLICATION
@@ -28,7 +29,7 @@ class MainWindow(QMainWindow):
         
         tabs = QTabWidget()
         tabs.addTab(EmbedTab(), "Embed")
-        tabs.addTab(QWidget(), "Extract")
+        tabs.addTab(ExtractTab(), "Extract")
         tabs.addTab(EmbedTabMockUp(), "Embed Mockup")
         
         self.setCentralWidget(tabs)

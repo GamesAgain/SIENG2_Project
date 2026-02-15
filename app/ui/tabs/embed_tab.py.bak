@@ -32,7 +32,6 @@ from PyQt6.QtWidgets import (
 
 from app.core.stego.lsb_plus.engine.noise_predictor import adjust_capacity_for_pixel
 from app.core.stego.lsb_plus.engine.pixel_order import build_pixel_order
-from app.core.stego.metadata_engine.metadata import MetadataEditorWidget
 from app.ui.components.loco_file import LocoFileTile
 
 try:
@@ -62,10 +61,6 @@ PAGE_LSB = 0
 PAGE_LOCOMOTIVE = 1
 PAGE_METADATA = 2
 
-
-#For switch self.payload_stack section
-PAGE_PAYLOAD_INPUT = 0
-PAGE_CARRIER_PREVIEW = 1
 
 TAB_INDEX_TEXT = 0
 TAB_INDEX_FILE = 1
@@ -229,62 +224,25 @@ class EmbedWorker(QThread):
 # CUSTOM WIDGETS
 # ============================================================================
 
-from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import pyqtSignal, Qt
-
-from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import pyqtSignal
-
-from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import pyqtSignal
-
 class DraggablePreviewLabel(QLabel):
-    """
-    QLabel with drag-and-drop support.
-    allowed_extensions: list of strings (e.g., ['.png', '.jpg']) or None for all files.
-    """
-    file_dropped = pyqtSignal(str)  # Emit file path when image dropped
+    """QLabel with drag-and-drop support for PNG images"""
+    image_dropped = pyqtSignal(str)  # Emit file path when image dropped
     
-    def __init__(self, parent=None, allowed_extensions=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self._original_style = ""
-        
-        # จัดการเรื่องนามสกุลไฟล์
-        if allowed_extensions:
-            # แปลงเป็น tuple และทำเป็นตัวพิมพ์เล็กทั้งหมด
-            # เติม . ถ้า user ลืมใส่ (เช่น ส่งมาแค่ 'png' -> '.png')
-            processed_exts = []
-            for ext in allowed_extensions:
-                ext = ext.lower()
-                if not ext.startswith('.'):
-                    ext = '.' + ext
-                processed_exts.append(ext)
-            self.allowed_extensions = tuple(processed_exts)
-        else:
-            self.allowed_extensions = None # None แปลว่ารับทุกไฟล์ (Default)
-
-    def is_extension_allowed(self, file_path):
-        """Helper function to check extension"""
-        # ถ้าเป็น None (Default) ให้ผ่านหมด หรือ ถ้ามีนามสกุลที่กำหนดให้เช็ค
-        if self.allowed_extensions is None:
-            return True
-        return file_path.lower().endswith(self.allowed_extensions)
     
     def dragEnterEvent(self, event):
-        """Handle drag enter"""
+        """Handle drag enter - check if it's a PNG file"""
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
             if len(urls) == 1:
                 file_path = urls[0].toLocalFile()
-                
-                # ใช้ Helper function เช็ค
-                if self.is_extension_allowed(file_path):
+                if file_path.lower().endswith('.png'):
                     event.acceptProposedAction()
-                    
-                    # Visual feedback logic (คงเดิมตามที่คุณต้องการ)
+                    # Visual feedback: change border color to blue
                     self._original_style = self.styleSheet()
-                    # หมายเหตุ: การใช้ replace จะทำงานได้ต่อเมื่อมี style เดิมที่มี text นี้อยู่แล้ว
                     new_style = self._original_style.replace('border: 2px dashed #555', 'border: 2px dashed #3daee9')
                     self.setStyleSheet(new_style)
                     return
@@ -294,18 +252,14 @@ class DraggablePreviewLabel(QLabel):
         """Restore original style when drag leaves"""
         if self._original_style:
             self.setStyleSheet(self._original_style)
-            # ไม่ reset self._original_style ที่นี่ เพื่อความชัวร์ในการ restore ครั้งถัดไป
-            # หรือถ้า logic เดิมคุณ ok แล้วก็ปล่อยไว้
     
     def dropEvent(self, event):
         """Handle file drop"""
         urls = event.mimeData().urls()
         if urls:
             file_path = urls[0].toLocalFile()
-            
-            # ใช้ Helper function เช็คอีกรอบตอนปล่อย
-            if self.is_extension_allowed(file_path):
-                self.file_dropped.emit(file_path)
+            if file_path.lower().endswith('.png'):
+                self.image_dropped.emit(file_path)
                 event.acceptProposedAction()
         
         # Restore original style
@@ -321,8 +275,7 @@ class EmbedTab(QWidget):
        super().__init__()
        
        self.locomotive_files = []
-       self.original_lsb_preview_pixmaps = {}  # Store original pixmaps for scaling
-       self.original_meta_preview_pixmaps = {}
+       self.original_preview_pixmaps = {}  # Store original pixmaps for scaling
        # Configurable Editor: pipeline data (list of {id, technique, encrypted, display})
        self.embed_pipeline = []
        self.extract_pipeline = []
@@ -362,7 +315,7 @@ class EmbedTab(QWidget):
             self.carrier_browse_btn.clicked.connect(self.browse_locomotive_files)
         elif is_metadata:
             self.switch_to_metadata_mode()
-            self.carrier_browse_btn.clicked.connect(self.browse_metadata_file)
+            # self.carrier_browse_btn.clicked.connect(self.browse_locomotive_files)
             
     def on_mode_changed(self):
         is_config = self.mode_combo.currentText() == "Configurable Model"
@@ -379,6 +332,7 @@ class EmbedTab(QWidget):
         if hasattr(self, "loco_execution_container"):
             self.loco_execution_container.setVisible(not is_config)
 
+        # ⭐ Force UI Refresh
         self.on_technique_changed()
 
     
@@ -389,10 +343,9 @@ class EmbedTab(QWidget):
         """
         
         # 1. เคลียร์ตัวแปรเก็บข้อมูล (Data Variables)
-        self.current_file_path = None
+        self.current_image_path = None
         self.locomotive_files = []
-        self.original_lsb_preview_pixmaps = None  # ล้าง Cache ภาพต้นฉบับ
-        self.original_meta_preview_pixmaps = None
+        self.original_preview_pixmaps = None  # ล้าง Cache ภาพต้นฉบับ
         self.limit_safe = 0
         self.limit_max = 0
 
@@ -438,24 +391,9 @@ class EmbedTab(QWidget):
                 }
             """)
             
-        if hasattr(self, 'meta_preview_label'):
-            self.meta_preview_label.clear()
-            self.meta_preview_label.setText("No File Selected\n\ndrag & drop file (JPG, PNG, MP3) here")
-            self.meta_preview_label.setStyleSheet("""
-                QLabel {
-                    border: 2px dashed #555;
-                    background-color: #222;
-                    color: #888;
-                    font-size: 10pt;
-                }
-            """)
-            
         # 7. รีเซ็ตค่าสถิติและความจุ (Reset Stats & Capacity)
-        if hasattr(self, 'update_lsb_preview_stats'):
-            self.update_lsb_preview_stats(None)
-            
-        if hasattr(self, 'update_meta_preview_stats'):
-            self.update_meta_preview_stats(None)
+        if hasattr(self, '_update_stats'):
+            self._update_stats(None)
         
         if hasattr(self, 'lbl_capacity'):
             self.lbl_capacity.setText("Size: 0 B")
@@ -557,7 +495,7 @@ class EmbedTab(QWidget):
     def switch_to_lsb_mode(self):
         """Switch UI to Standalone Mode (Single Image, Text/Code Files)"""
         
-        self.payload_stack.setCurrentIndex(PAGE_PAYLOAD_INPUT)
+        self.payload_stack.setCurrentIndex(0)
         
         self.payload_main_group.setTitle("Payload Input")
         
@@ -583,7 +521,6 @@ class EmbedTab(QWidget):
         """Switch UI to Locomotive Mode (Multiple Images, All File Types)"""
         
         self.payload_main_group.setTitle("Payload Input")
-        self.payload_stack.setCurrentIndex(PAGE_PAYLOAD_INPUT)
         
         # 1. Switch Right Panel
         self.preview_stack.setCurrentIndex(PAGE_LOCOMOTIVE)
@@ -603,26 +540,11 @@ class EmbedTab(QWidget):
             self.standalone_content_stack.setCurrentIndex(0)
             
     def switch_to_metadata_mode(self):
-        self.payload_stack.setCurrentIndex(PAGE_CARRIER_PREVIEW) # แสดงหน้า Preview ฝั่งซ้าย
-        self.payload_main_group.setTitle("Carrier Preview")
-        self.preview_stack.setCurrentIndex(PAGE_METADATA)
+        self.payload_stack.setCurrentIndex(1)
         
-        # กำหนด Placeholder
-        self.carrier_edit.setPlaceholderText("Select file to edit metadata...")
-       
-    def browse_metadata_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select File", "", "Media Files (*.jpg *.jpeg *.png *.mp3)"
-        )
-        if file_path:
-            
-            self.current_file_path = file_path
-            self.carrier_edit.setText(file_path)
-            self.update_meta_preview_stats(file_path)
-            self.load_file_preview(file_path)
-            
-            if hasattr(self, 'metadata_editor'):
-                self.metadata_editor.load_file(file_path)
+        self.payload_main_group.setTitle("Carrier Preview")
+        
+        self.preview_stack.setCurrentIndex(PAGE_METADATA)
         
         
 
@@ -644,7 +566,7 @@ class EmbedTab(QWidget):
         
         # [STEP 1] Validate Cover Source
         if is_LSBPP:
-            if not hasattr(self, 'current_file_path') or not self.current_file_path:
+            if not hasattr(self, 'current_image_path') or not self.current_image_path:
                 QMessageBox.warning(self, "Missing Input", "Please select a carrier image first!")
                 return
         elif is_locomotive:
@@ -761,7 +683,7 @@ class EmbedTab(QWidget):
                 engine = LSBPP()
                 self.worker = EmbedWorker(
                     engine=engine,
-                    cover_source=self.current_file_path,  # String
+                    cover_source=self.current_image_path,  # String
                     payload_source=payload_data,           # String Content
                     mode_str=mode_str,
                     pwd=pwd,
@@ -913,71 +835,41 @@ class EmbedTab(QWidget):
             self, "Select Carrier Image", "", "PNG Images (*.png)"
         )
         if file_path:
-            self.current_file_path = file_path
+            self.current_image_path = file_path
             self.carrier_edit.setText(file_path)
-            self.load_image_preview(file_path)    
-            payload_size = self.update_payload_size()
-            self.update_lsb_preview_stats(file_path, payload_size)
+            self._load_image_preview(file_path)    
+            payload_size = self._update_payload_size()
+            self._update_stats(file_path, payload_size)
             self.update_capacity_indicator()
             
-            self.start_capacity_calculation(file_path)
+            self._start_capacity_calculation(file_path)
             
             
-    def update_payload_size(self):
+    def _update_payload_size(self):
         return len(self.payload_text.toPlainText().encode()) if hasattr(self, 'payload_text') else 0
-    
-    def load_file_preview(self, file_path):
-        # กำหนดกลุ่มนามสกุลไฟล์
-        image_exts = ('.png', '.jpg', '.jpeg')
-        audio_exts = ('.mp3', '.wav')
-
-        if file_path.lower().endswith(image_exts):
-            # CASE 1: รูปภาพ
-            pixmap = QPixmap(file_path)
-            self.original_meta_preview_pixmaps = pixmap
             
-            if not pixmap.isNull():
-                self.update_meta_preview_scaling(pixmap, self.meta_preview_label)
-
-        elif file_path.lower().endswith(audio_exts):
-            # CASE 2: ไฟล์เสียง
-            
-            # 1. เคลียร์รูปต้นฉบับเดิม
-            self.original_meta_preview_pixmaps = None 
-
-            # 2. สร้างไอคอน
-            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaVolume)
-            icon_pixmap = icon.pixmap(64, 64)
-            
-            # --- จุดที่แก้ไข ---
-            # ต้องสั่งที่ meta_preview_label ไม่ใช่ self
-            self.meta_preview_label.setPixmap(icon_pixmap)
-            self.meta_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.meta_preview_label.setToolTip(f"Audio File: {os.path.basename(file_path)}")
-
-        else:
-            # กรณีไฟล์อื่นๆ
-            self.meta_preview_label.setText(f"File not supported:\n{os.path.basename(file_path)}")
-            self.original_meta_preview_pixmaps = None
-      
-    def load_image_preview(self, image_path):
+    def _load_image_preview(self, image_path):
         pixmap = QPixmap(image_path)
-        self.original_lsb_preview_pixmaps = pixmap
+        self.original_preview_pixmaps = pixmap
         
         if not pixmap.isNull():
-            self.update_preview_scaling(pixmap, self.preview_label)
+            self._update_preview_scaling()
             
-    def update_preview_scaling(self, original_preview_pixmaps, preview_label):
+    def _update_preview_scaling(self):
         """Update all preview labels with proper scaling based on current size."""
         # 1. เช็คก่อนว่ามีรูปภาพให้ประมวลผลไหม (กัน Crash)
-        pixmap = original_preview_pixmaps
+        pixmap = getattr(self, 'original_preview_pixmaps', None)
         if pixmap is None or pixmap.isNull():
             return
 
         # 2. คำนวณขนาด
-        label_width = preview_label.width() - 20 
+        label_width = self.preview_label.width()
+        if label_width <= 0:
+            label_width = 500
             
-        max_height = preview_label.height() - 20 
+        max_height = min(500, int(self.height() * 0.5))
+        if max_height < 250:
+            max_height = 250
         
         # 3. ประมวลผลภาพ
         scaled_pixmap = pixmap.scaled(
@@ -987,29 +879,7 @@ class EmbedTab(QWidget):
         )
         
         # 4. อัปเดต UI 
-        preview_label.setPixmap(scaled_pixmap)
-        
-    def update_meta_preview_scaling(self, original_preview_pixmaps, preview_label):
-        """Update all preview labels with proper scaling based on current size."""
-        # 1. เช็คก่อนว่ามีรูปภาพให้ประมวลผลไหม (กัน Crash)
-        pixmap = original_preview_pixmaps
-        if pixmap is None or pixmap.isNull():
-            return
-
-        # 2. คำนวณขนาด
-        label_width = preview_label.width() - 20
-        label_height = preview_label.height() -20
-        
-        
-        # 3. ประมวลผลภาพ
-        scaled_pixmap = pixmap.scaled(
-            label_width, label_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        
-        # 4. อัปเดต UI 
-        preview_label.setPixmap(scaled_pixmap)
+        self.preview_label.setPixmap(scaled_pixmap)
         
         
             
@@ -1153,14 +1023,14 @@ class EmbedTab(QWidget):
         
         # 2. สร้าง Layout และผูกกับ container เลย
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 0, 0, 0) # เอาขอบออก เพราะไม่มีเส้นกรอบแล้ว
         layout.setSpacing(6)
         
         # Preview Label with drag-and-drop support (ส่วนเดิม)
-        self.meta_preview_label = DraggablePreviewLabel(allowed_extensions=['.jpg', '.png', '.mp3'])
-        self.meta_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.meta_preview_label.setText("No File Selected\n\ndrag & drop file (JPG, PNG, MP3) here")
-        self.meta_preview_label.setStyleSheet("""
+        self.preview_label = DraggablePreviewLabel()
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setText("No Image Selected\n\nSelect PNG image from left panel\nor drag & drop PNG file here")
+        self.preview_label.setStyleSheet("""
             QLabel {
                 border: 2px dashed #555;
                 background-color: #222;
@@ -1168,12 +1038,12 @@ class EmbedTab(QWidget):
                 font-size: 10pt;
             }
         """)
-        self.meta_preview_label.setMinimumHeight(200)
-        self.meta_preview_label.setScaledContents(False)
+        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setScaledContents(False)
         
-        self.meta_preview_label.file_dropped.connect(self.on_meta_preview_file_dropped)
+        # self.preview_label.image_dropped.connect(self._on_preview_image_dropped)
         
-        layout.addWidget(self.meta_preview_label, 1)
+        layout.addWidget(self.preview_label, 1)
         
         # Info Label (file info) (ส่วนเดิม)
         preview_info_label = QLabel("")
@@ -1208,13 +1078,16 @@ class EmbedTab(QWidget):
         
         
         # File Name Stat
-        self.meta_stat_filename = self.create_stat_item("File:", "None", "#e0e0e0")
-        layout.addWidget(self.meta_stat_filename)
+        self.stat_filename = self.create_stat_item("File:", "ABC..c.png", "#e0e0e0")
+        layout.addWidget(self.stat_filename)
         
         # Image Size Stat
-        self.meta_stat_image_size = self.create_stat_item("Size:", "0 B", "#e0e0e0")
-        layout.addWidget(self.meta_stat_image_size)
+        self.stat_image_size = self.create_stat_item("Size:", "800 KB", "#e0e0e0")
+        layout.addWidget(self.stat_image_size)
         
+        # File Type Stat
+        self.stat_filetype = self.create_stat_item("Type:", "PNG", "#e0e0e0")
+        layout.addWidget(self.stat_filetype)
          
         return container
     
@@ -1312,7 +1185,7 @@ class EmbedTab(QWidget):
             # กรณีไม่มีภาพ หรือภาพเล็กเกินเยียวยาจริงๆ
             self.lbl_capacity.setText(f"Size: {format_file_size(current_size)}")
             self.lbl_capacity.setStyleSheet("color: #aaa; font-size: 8pt;")
-            self.update_payload_size()
+            self._update_payload_size()
             return
 
         # ==========================================================
@@ -1340,9 +1213,9 @@ class EmbedTab(QWidget):
             self.lbl_capacity.setToolTip("Over Limit: Capacity exceeded. Cannot embed.")
             
         self.lbl_capacity.setText(cap_text)
-        self.update_payload_size()
+        self._update_payload_size()
             
-    def start_capacity_calculation(self, image_path):
+    def _start_capacity_calculation(self, image_path):
         """สั่งเริ่มคำนวณความจุใน Background"""
         # ตั้งค่า UI ให้รู้ว่ากำลังคิดอยู่
         if hasattr(self, 'stat_capacity'):
@@ -2210,7 +2083,7 @@ class EmbedTab(QWidget):
         stack = QStackedWidget()
         stack.addWidget(self.create_lsb_page())
         stack.addWidget(self.create_locomotive_page())
-        stack.addWidget(self.create_metadata_editor_page())
+        stack.addWidget(self.create_metadata_page())
         return stack
     
     def create_locomotive_list_widget(self):
@@ -2323,12 +2196,15 @@ class EmbedTab(QWidget):
         layout.addWidget(self.build_execution_group("Execute Locomotive Embedding", "loco"), 0)
         return page
     
-    def create_metadata_editor_page(self):
-        self.metadata_editor = MetadataEditorWidget()
+    def create_metadata_page(self):
         
         box = QGroupBox("Metadata Editor")
-        layout = QVBoxLayout(box)       
-        layout.addWidget(self.metadata_editor)
+        tab = QTabWidget()
+        tab.addTab(QWidget(), "General Info")
+        tab.addTab(QWidget(), "Specific Info")
+        tab.addTab(QWidget(), "Custom Tags")
+        
+        
         
         return box
     
@@ -2340,7 +2216,7 @@ class EmbedTab(QWidget):
         group_layout.setSpacing(6)
         
         # Preview Label with drag-and-drop support
-        self.preview_label = DraggablePreviewLabel(allowed_extensions=['.png'])
+        self.preview_label = DraggablePreviewLabel()
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setText("No Image Selected\n\nSelect PNG image  from left panel\nor drag & drop PNG file here")
         self.preview_label.setStyleSheet("""
@@ -2355,7 +2231,7 @@ class EmbedTab(QWidget):
         self.preview_label.setScaledContents(False)
         
         
-        self.preview_label.file_dropped.connect(self.on_lsb_preview_image_dropped)
+        self.preview_label.image_dropped.connect(self._on_preview_image_dropped)
         
         group_layout.addWidget(self.preview_label, 1)
         
@@ -2406,7 +2282,7 @@ class EmbedTab(QWidget):
         
         return container
     
-    def update_lsb_preview_stats(self, image_path=None, payload_size=0):
+    def _update_stats(self, image_path=None, payload_size=0):
         # 1. ใช้การอ้างอิงตรงๆ หรือเช็คผ่าน hasattr (ถ้าไม่ชัวร์ว่าสร้าง Widget หรือยัง)
         if not hasattr(self, 'stat_image_size'): return
         
@@ -2445,38 +2321,6 @@ class EmbedTab(QWidget):
             self.max_capacity_bytes = 0
             lbl_name.setText("None")
             lbl_name.setToolTip("")
-            
-    def update_meta_preview_stats(self, file_path=None):
-
-        lbl_name = self.meta_stat_filename.value_label
-        lbl_size = self.meta_stat_image_size.value_label
-
-        if file_path and os.path.exists(file_path):
-            try:
-                with Image.open(file_path) as img:
-                    width, height = img.size
-                    file_size = os.path.getsize(file_path)
-                    filename = os.path.basename(file_path)
-                    if len(filename) > 20:
-                        display_name = filename[:10] + "..." + filename[-7:]
-                    else:
-                        display_name = filename
-                    
-                    lbl_name.setText(display_name)
-                    lbl_name.setToolTip(file_path)
-                    
-                    # แสดงขนาดภาพและขนาดไฟล์
-                    lbl_size.setText(f"{width}×{height} ({format_file_size(file_size)})")
-                    
-                    
-
-            except Exception as e:
-                print(f"Error updating stats: {e}")
-        else:
-            # Reset ทุกอย่างให้เป็นค่าเริ่มต้น (ถ้าไม่มีภาพ)
-            lbl_name.setText("None")
-            lbl_name.setToolTip("")
-            lbl_size.setText("0 B")
             
     def build_execution_group(self, button_text, prefix):
         """
@@ -2625,8 +2469,8 @@ class EmbedTab(QWidget):
             # =========================================================
             else:
                 # ตั้งชื่อไฟล์ Default
-                if self.current_file_path:
-                    orig_name = os.path.splitext(os.path.basename(self.current_file_path))[0]
+                if self.current_image_path:
+                    orig_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
                     default_save_name = f"{orig_name}_stego.png"
                 else:
                     default_save_name = "stego_image.png"
@@ -2674,7 +2518,7 @@ class EmbedTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Error during saving:\n{str(e)}")
     
-    def on_lsb_preview_image_dropped(self, file_path):
+    def _on_preview_image_dropped(self, file_path):
         """Handle image dropped on preview area"""
         try:
             # Validate file exists
@@ -2688,49 +2532,22 @@ class EmbedTab(QWidget):
                 return
             
             # Same logic as browse_single_image()
-            self.current_file_path = file_path
+            self.current_image_path = file_path
             self.carrier_edit.setText(file_path)
-            self.load_image_preview(file_path)
+            self._load_image_preview(file_path)
             
             # อัปเดต Stats เบื้องต้น
-            payload_size = self.update_payload_size()
-            self.update_lsb_preview_stats(file_path, payload_size)
+            payload_size = self._update_payload_size()
+            self._update_stats(file_path, payload_size)
             self.update_capacity_indicator()
             
             # เริ่มคำนวณความจุละเอียด (Worker จะมาอัปเดต UI อีกทีเมื่อเสร็จ)
-            self.start_capacity_calculation(file_path)
+            self._start_capacity_calculation(file_path)
             
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
                     
-    def on_meta_preview_file_dropped(self, file_path):
-        """Handle image dropped on preview area"""
-        try:
-            # Validate file exists
-            if not os.path.exists(file_path):
-                QMessageBox.warning(self, "Error", "File not found!")
-                return
-            
-            # Validate PNG file
-            valid_extensions = ('.png', '.jpg', '.jpeg', '.mp3')
-
-            if not file_path.lower().endswith(valid_extensions):
-                QMessageBox.warning(self, "Error", "Only (JPEG, PNG, MP3) files are supported!")
-                return
-            
-            self.current_file_path = file_path
-            self.carrier_edit.setText(file_path)
-            self.update_meta_preview_stats(file_path)
-            self.load_file_preview(file_path)
-            
-            self.metadata_editor.load_file(file_path)
-            
-            
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
-            
     def create_stat_item(self, label_text, value_text, color):
         """Create a single stat item"""
         widget = QWidget()
